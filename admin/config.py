@@ -120,6 +120,21 @@ class Settings:
     SOFT_RATE_SECONDS = int(os.getenv("ADMIN_POOL_SOFT_RATE", "600"))
     #: 软冷却指数退避封顶（秒）。默认 2h，与参考实现一致。
     SOFT_RATE_MAX_SECONDS = int(os.getenv("ADMIN_POOL_SOFT_RATE_MAX", "7200"))
+    #: 「纯请求速率」限流（code 14003 RateLimitError / subcategory
+    #: `quota_request_limit`）的冷却基数（秒）。
+    #:
+    #: 为什么不和 SOFT_RATE_SECONDS 共用一个值：两者量级差一个数量级。
+    #: SOFT_RATE_SECONDS=600 是给 6000–6008（每分钟/每小时请求数）这类
+    #: **配额型**限流用的，等 10 分钟是合理的；而 14003 的语义是
+    #: 「当前模型请求繁忙 / 请求过于频繁，请稍后重试」——上游自己给的建议
+    #: 就是「稍后重试」，官方 UI 文案也是「请切换模型或稍后重试」。
+    #: 给它 600 秒会把一次**瞬时**抖动放大成 10 分钟的整池停摆：
+    #: 一次请求轮转 3 个号，几个并发请求就能把 15 个号的池子全部冷掉
+    #: （2026-09-23 线上故障即为此：16 个号 76 秒内全部 soft_rate，
+    #: 冷却到 10 分钟后，期间所有请求直接 503）。
+    REQUEST_RATE_SECONDS = int(os.getenv("ADMIN_POOL_REQUEST_RATE", "20"))
+    #: 纯请求速率限流的指数退避封顶（秒）。留足退避余量但不至于停摆太久。
+    REQUEST_RATE_MAX_SECONDS = int(os.getenv("ADMIN_POOL_REQUEST_RATE_MAX", "120"))
     #: 连续失败熔断阈值与退避（次 / 秒 / 封顶秒）。
     BREAKER_THRESHOLD = int(os.getenv("ADMIN_POOL_BREAKER_THRESHOLD", "5"))
     BREAKER_COOLDOWN_SECONDS = int(os.getenv("ADMIN_POOL_BREAKER_COOLDOWN", "600"))

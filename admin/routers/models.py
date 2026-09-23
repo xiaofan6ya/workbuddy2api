@@ -249,7 +249,15 @@ async def speed_test(
         Account.status == "active", Account.balance_remain > 0
     ).order_by(Account.balance_remain.desc()).first()
     if not acc:
-        raise HTTPException(status_code=503, detail="无可用账号（全部禁用或额度耗尽）")
+        # 文案如实：这个接口只挑「启用且余额>0」，**不看在途/冷却**，
+        # 所以「全部禁用或额度耗尽」这句话经常是错的（例如账号只是被临时限流）。
+        total = db.query(Account).count()
+        active = db.query(Account).filter(Account.status == "active").count()
+        raise HTTPException(
+            status_code=503,
+            detail=(f"无可用账号：共 {total} 个账号，其中启用 {active} 个，"
+                    f"但没有任何「启用且余额大于 0」的账号"
+                    f"（本接口不判断在途与冷却状态）"))
 
     sess = backend.AccountSession(acc.auth_json)
     headers = sess.get_headers()

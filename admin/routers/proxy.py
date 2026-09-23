@@ -480,6 +480,32 @@ _RATE_LIMIT_CODES = _ACCOUNT_RATE_CODES | _MODEL_RATE_CODES
 #:   不是额度，语义不同，故不并入这里。）
 _QUOTA_EXHAUSTED_CODES = frozenset({"14001", "14012", "14013", "14014", "14018"})
 
+#: 「纯请求速率」限流：code 14003。
+#:
+#: 官方枚举里它叫 `RateLimitError`（`codebuddy.js` @2842 附近的 ServerErrorCode），
+#: `classifyErrorDetail` 给它的归类是 `{category:"quota", subcategory:"quota_request_limit"}`
+#: —— 注意与 `quota_balance_exhausted`（14001/14002/14012/… 余额耗尽）是**不同**
+#: 的 subcategory：14003 是「发得太快」，不是「额度没了」。
+#: 上游文案：`{"code":14003,"msg":"too many requests","displayMsg":{"zh":"请求过于频繁，请稍后重试。"}}`；
+#: 官方 UI 把它渲染成「当前模型请求繁忙，请切换模型或稍后重试」。
+#:
+#: 因此它是**瞬时**错误：分类仍是 soft_rate（可重试、换号可解），但冷却时长必须
+#: 走 REQUEST_RATE_SECONDS（秒级），不能走 SOFT_RATE_SECONDS（600 秒）。
+_REQUEST_RATE_CODES = frozenset({"14003"})
+
+#: 「只是被临时限流」的冷却类型 —— 到期前也允许作为**最后一档**兜底候选。
+#:
+#: 为什么需要兜底：这些状态本来就是「等一会就好」。当**整池**都落在这种状态时，
+#: `_select_account` 直接返回 None 会让一次瞬时抖动升级成硬停摆 ——
+#: 所有请求拿到 503「无可用账号」，而实际上没有一个号被禁用、也没有一个号额度耗尽。
+#: （2026-09-23 线上事故即为此：上游 14003 在 76 秒内命中全部 16 个号，
+#: 每个号被软冷却 600 秒，期间请求全部 503。）
+#:
+#: 明确**不包含** hard_credit / account_fault / session_dead / waf：
+#: 那些是持久失败或终态（额度耗尽、需重新登录、出口 IP 被拦），
+#: 兜底重试只会白烧一次上游调用，还可能加重风控。
+_TRANSIENT_COOL_KINDS = frozenset({"soft_rate", "not_found", "upstream_internal"})
+
 #: 模型级限流：code 6004/6008「该模型的使用量超限」。只冷却**这一个模型**，
 #: 该账号对其他模型仍可用 —— 否则「切个模型就能继续用」的号会被整体摘出池子。
 _MODEL_RATE_CODE = "6004"
@@ -903,11 +929,19 @@ def _apply_account_policy(db: Session, acc: Account, kind: str, status: int,
     elif kind == "soft_rate":
         # 有上游重置时间就精确对齐（绝不指数放大：那样会把全池推到封顶），
         # 没有才做有界指数退避。
-        if reset_at is not None:
-            until = min(reset_at, now + timedelta(seconds=settings.SOFT_RATE_MAX_SECONDS))
+        #
+        # 基数按**码族**分档：14003 是「请求过于频繁」（纯速率），上游自己就说
+        # 「请稍后重试」，给秒级即可；6000–6008 那类配额型限流才用 600 秒起。
+        # 共用一个 600 秒基数会把几次并发请求放大成整池停摆（见线上故障复盘）。
+        if _json_code(msg) in _REQUEST_RATE_CODES:
+            base = max(1, settings.REQUEST_RATE_SECONDS)
+            cap = max(base, settings.REQUEST_RATE_MAX_SECONDS)
         else:
             base = max(1, settings.SOFT_RATE_SECONDS)
             cap = max(base, settings.SOFT_RATE_MAX_SECONDS)
+        if reset_at is not None:
+            until = min(reset_at, now + timedelta(seconds=cap))
+        else:
             streak = (acc.err_count or 0) + 1
             until = now + timedelta(seconds=min(base * (2 ** min(streak - 1, 8)), cap))
         # 已在软冷却中不延长（防兜底探测把冷却越堆越厚）
@@ -1216,6 +1250,67 @@ def _account_session_safe(db: Session, acc: Account) -> backend.AccountSession |
 _CREDIT_RE = re.compile(r"x\s*([0-9]+(?:\.[0-9]+)?)")
 
 
+def _transient_cool_fallback(db: Session, exclude_ids: set | None,
+                             min_balance: int, now: datetime,
+                             limit: int = 5) -> list:
+    """整池都在临时冷却时的兜底候选（冷却最早到期的前 `limit` 个）。
+
+    只在 `_select_account` 的严格过滤结果为空时调用。语义是「退一档，
+    而不是判定无号可用」：
+
+      * 只放宽 `cool_until` —— `breaker_until` / `degrade_until` 仍然生效，
+        因为它们代表**连续真实失败**，不是单次限流可以解释的；
+      * 只接受 `_TRANSIENT_COOL_KINDS`，持久状态（额度耗尽 / 需重登 / IP 被拦）
+        一律不参与，避免对着一个死号反复重试；
+      * 不在这里做在途/防撞号/模型级过滤 —— 调用方会继续走 `_select_account`
+        剩下的同一套下游逻辑，所以并发请求会被防撞号窗口摊到不同号上，
+        不会出现「一堆请求同时砸同一个兜底号」。
+
+    返回按 `cool_until` 升序的候选（最早到期的排最前，最可能已恢复）。
+    """
+    q = (db.query(Account)
+           .filter(Account.status == "active",
+                   Account.cool_kind.in_(tuple(_TRANSIENT_COOL_KINDS))))
+    if min_balance > 0:
+        q = q.filter(Account.balance_remain > 0)
+    if exclude_ids:
+        q = q.filter(~Account.id.in_(exclude_ids))
+    q = q.filter(or_(Account.breaker_until.is_(None), Account.breaker_until <= now))
+    q = q.filter(or_(Account.degrade_until.is_(None), Account.degrade_until <= now))
+    return q.order_by(Account.cool_until.asc()).limit(limit).all()
+
+
+def _no_account_reason(db: Session) -> str:
+    """`_select_account` 选不出号时，给出一句**如实**的原因。
+
+    原实现固定回「全部禁用或额度耗尽」。这句话在「整池只是被上游临时限流」
+    的场景下是**错的** —— 它会把排障直接引向「换账号 / 充值」，
+    而真实原因只是等几十秒。线上事故里 16 个号全是 active 且余额 1000+，
+    却被这句话误导成额度问题。
+    """
+    now = datetime.utcnow()
+    accs = db.query(Account).all()
+    if not accs:
+        return "号池为空（还没有添加任何账号）"
+    active = [a for a in accs if (a.status or "") == "active"]
+    if not active:
+        return f"全部 {len(accs)} 个账号都已禁用"
+    funded = [a for a in active if int(a.balance_remain or 0) > 0]
+    if not funded:
+        return f"{len(active)} 个启用中的账号余额都为 0（积分耗尽）"
+    transient = [a for a in funded
+                 if a.cool_kind in _TRANSIENT_COOL_KINDS
+                 and a.cool_until is not None and a.cool_until > now]
+    if len(transient) == len(funded):
+        soon = min(a.cool_until for a in transient)
+        left = max(0, int((soon - now).total_seconds()))
+        return (f"全部 {len(funded)} 个账号正被上游临时限流"
+                f"（最近一个约 {left} 秒后恢复，无需人工处理）")
+    blocked = len(funded) - len(transient)
+    return (f"{len(funded)} 个账号有余额，但当前都不可选"
+            f"（其中 {blocked} 个处于熔断/降权或需人工处理的异常状态）")
+
+
 def _select_account(db: Session, exclude_ids: set | None = None,
                     min_balance: int = 1, mark_picked: bool = True,
                     model: str = "", sticky_key: str = "",
@@ -1250,6 +1345,17 @@ def _select_account(db: Session, exclude_ids: set | None = None,
     q = q.filter(or_(Account.degrade_until.is_(None), Account.degrade_until <= now))
 
     rows = q.all()
+    if not rows:
+        # 整池都进了**临时**冷却，而不是「没有健康账号」。
+        # 这里不直接返回 None（那会变成对客户端的 503 硬失败），
+        # 而是退一档：把冷却最早到期、且阻塞原因只是临时限流的号拿来做候选。
+        # 14003 这类「请求过于频繁」很可能已经自然恢复；即便没恢复，
+        # 试一次也远好于给用户一个必然失败的 503。
+        rows = _transient_cool_fallback(db, exclude_ids, min_balance, now)
+        if rows:
+            _logger.warning(
+                "号池全部处于临时冷却中，启用兜底候选 %d 个（最早的 %s 到期）",
+                len(rows), rows[0].cool_until)
     if not rows:
         return None
 
@@ -1683,8 +1789,11 @@ async def chat_completions(
 
     acc = _select_account(db)
     if not acc:
+        # 文案必须如实：常见情形是「整池被临时限流」而非「禁用/额度耗尽」，
+        # 后者会把排障引向换号/充值，而真实原因只是等几十秒。
         return JSONResponse(status_code=503,
-                            content={"error": {"message": "无可用账号（全部禁用或额度耗尽）", "type": "no_account"}})
+                            content={"error": {"message": f"无可用账号：{_no_account_reason(db)}",
+                                               "type": "no_account"}})
 
     try:
         payload = await request.json()
@@ -2911,7 +3020,8 @@ async def models(
     acc = _select_account(db)
     if not acc:
         return JSONResponse(status_code=503,
-                            content={"error": {"message": "无可用账号", "type": "no_account"}})
+                            content={"error": {"message": f"无可用账号：{_no_account_reason(db)}",
+                                               "type": "no_account"}})
     # 绑定了分组的 Key 只应看到组内模型，否则客户端会照着完整列表点模型然后被 403
     allowed = _key_group_models(db, key)
     try:
