@@ -489,8 +489,13 @@ _QUOTA_EXHAUSTED_CODES = frozenset({"14001", "14012", "14013", "14014", "14018"}
 #: 上游文案：`{"code":14003,"msg":"too many requests","displayMsg":{"zh":"请求过于频繁，请稍后重试。"}}`；
 #: 官方 UI 把它渲染成「当前模型请求繁忙，请切换模型或稍后重试」。
 #:
-#: 因此它是**瞬时**错误：分类仍是 soft_rate（可重试、换号可解），但冷却时长必须
-#: 走 REQUEST_RATE_SECONDS（秒级），不能走 SOFT_RATE_SECONDS（600 秒）。
+#: **作用域是「模型」，不是「账号」**（线上实测：同一个号对
+#: deepseek-v4.1-flash 报 14003，换别的模型立刻可用）。所以它归类到
+#: `model_rate` —— 只冷「该账号×该模型」这一对，账号本身**完全不动**。
+#: 早期版本把它当账号级 soft_rate，后果是一个模型抖动会把整个号池摘空
+#: （16 个号 76 秒内全部被冷，期间所有请求 503），而其它模型其实都好着。
+#:
+#: 冷却时长走 REQUEST_RATE_SECONDS（秒级），不走配额型的 600 秒档。
 _REQUEST_RATE_CODES = frozenset({"14003"})
 
 #: 「只是被临时限流」的冷却类型 —— 到期前也允许作为**最后一档**兜底候选。
@@ -728,7 +733,7 @@ def _sse_has_content(body: str) -> bool:
 _EXHAUSTION_HINTS = {
     "hard_credit": "账号积分已用完（次日 04:00 重置）",
     "soft_rate": "上游限流中，请稍后重试",
-    "model_rate": "该模型在多个账号上都已达额度上限",
+    "model_rate": "该模型当前不可用（账号对该模型的额度用尽，或上游模型繁忙）",
     "model_block": "上游没有这个模型（该后端不提供）",
     "account_fault": "账号授权异常（需重新登录/激活）",
     "session_dead": "账号登录态失效（需重新登录）",
@@ -807,6 +812,13 @@ def _classify_error(status: int, body: str) -> str:
     #     落到后面就会被判成 client（不可重试）或 transport，于是「限流却不换号」。
     #     日级（6004/6008）只冷该模型；秒/分/时级（其余）是账号级，换号即可。
     if code in _MODEL_RATE_CODES:
+        return "model_rate"
+    # 4a. 14003 RateLimitError：**模型**繁忙，不是账号的问题。
+    #     线上实测：同一个号对 deepseek-v4.1-flash 报 14003，换别的模型立刻可用；
+    #     官方 UI 对它的文案也是「当前模型请求繁忙，请**切换模型**或稍后重试」。
+    #     所以必须走 model_rate（只冷「该账号×该模型」），**绝不能冷账号** ——
+    #     否则一个模型抖动就会把整个号池摘空，而其它模型其实都是好的。
+    if code in _REQUEST_RATE_CODES:
         return "model_rate"
     if code in _ACCOUNT_RATE_CODES:
         return "soft_rate"
@@ -898,6 +910,20 @@ def _bump_breaker(db: Session, acc: Account, now: datetime, msg: str) -> None:
         acc.breaker_fails = 0  # 计数清零：下轮重新累计，避免一路翻到封顶
 
 
+def _req_rate_seconds() -> tuple[int, int]:
+    """纯请求速率限流（`14003`）的 (基数秒, 封顶秒)。
+
+    这里用 `getattr` 兜底是**有意**的：线上 `admin/config.py` 属于
+    「服务器专用、部署时不覆盖」的文件（`ssh_sync.py` 的 EXCLUDE_EXACT），
+    新增设置项因此依赖部署顺序。万一哪次只更新了本文件而没更新配置，
+    这里退回默认值，而不是让整条限流处理路径抛 AttributeError。
+    """
+    base = int(getattr(settings, "REQUEST_RATE_SECONDS", 20) or 20)
+    cap = int(getattr(settings, "REQUEST_RATE_MAX_SECONDS", 120) or 120)
+    base = max(1, base)
+    return base, max(base, cap)
+
+
 def _apply_account_policy(db: Session, acc: Account, kind: str, status: int,
                           msg: str, model: str = "",
                           reset_at: datetime | None = None) -> None:
@@ -954,12 +980,28 @@ def _apply_account_policy(db: Session, acc: Account, kind: str, status: int,
         acc.last_err_msg = (msg or "429 rate limit")[:255]
     elif kind == "model_rate":
         # 只冷却触发调用的那个模型：账号级 until 不动，切模型立即可用。
-        _set_model_cooldown(db, acc, model, "model_rate",
-                            (msg or "6004 model rate limit")[:255],
-                            reset_at=reset_at,
-                            fallback_seconds=settings.MODEL_SOFT_RATE_SECONDS)
+        #
+        # 时长按码族分档：
+        #   * 6004/6008 是「该账号对该模型的**日额度**」——等 10 分钟合理；
+        #   * 14003 是「模型繁忙 / 请求过于频繁」——瞬时，且上游自己的建议
+        #     就是「切换模型或稍后重试」。给秒级；即便上游带了 Retry-After，
+        #     也按 REQUEST_RATE_MAX_SECONDS 封顶，免得把一次抖动记成小时级。
+        if _json_code(msg) in _REQUEST_RATE_CODES:
+            cap = max(1, _req_rate_seconds()[1])
+            ra = reset_at
+            if ra is not None:
+                ra = min(ra, datetime.utcnow() + timedelta(seconds=cap))
+            _set_model_cooldown(db, acc, model, "model_rate",
+                                (msg or "14003 model busy")[:255],
+                                reset_at=ra,
+                                fallback_seconds=max(1, _req_rate_seconds()[0]))
+        else:
+            _set_model_cooldown(db, acc, model, "model_rate",
+                                (msg or "6004 model rate limit")[:255],
+                                reset_at=reset_at,
+                                fallback_seconds=settings.MODEL_SOFT_RATE_SECONDS)
         acc.last_err_at = now
-        acc.last_err_msg = (msg or "6004 model rate limit")[:255]
+        acc.last_err_msg = (msg or "model rate limit")[:255]
     elif kind == "model_block":
         # 该后端无此模型：负缓存 (账号, 模型)，重试无意义。
         _set_model_cooldown(db, acc, model, "model_block",
