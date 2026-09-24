@@ -13,7 +13,8 @@ from admin.db import SessionLocal, init_db, wait_database_ready
 from admin.models import SystemSetting
 from admin.routers import (accounts, app_source, client_profile, groups, growth,
                            keys, logs, models, proxy, schedules, stats, sync)
-from admin.ratelimit import clear_failures, get_client_ip, is_locked, record_failure
+from admin.ratelimit import (clear_failures, get_client_ip, get_trusted_client_ip,
+                             is_locked, record_failure)
 from admin.security import (
     create_admin_token,
     hash_password,
@@ -36,7 +37,12 @@ except Exception:  # pragma: no cover - 降级分支
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
-app = FastAPI(title="WorkBuddy 共享管理后台", version="1.0")
+app = FastAPI(title="WorkBuddy 共享管理后台", version="1.0",
+              # 文档默认关闭：它对攻击者等于一份现成的完整攻击面清单。
+              # 需要时用 ADMIN_ENABLE_DOCS=1 打开。
+              docs_url="/docs" if settings.ENABLE_DOCS else None,
+              redoc_url="/redoc" if settings.ENABLE_DOCS else None,
+              openapi_url="/openapi.json" if settings.ENABLE_DOCS else None)
 
 # CORS：共享网关以 Authorization 头鉴权、不使用 Cookie，故关闭 credentials；
 # 避免 `allow_origins=["*"] + allow_credentials=True` 的危险组合。
@@ -219,7 +225,11 @@ def login(
     password: str = Form(...),
     request: Request = None,
 ):
-    ip = get_client_ip(
+    # 登录锁定必须用**不可伪造**的来源 IP：X-Forwarded-For 由 nginx 以
+    # `$proxy_add_x_forwarded_for` 追加，客户端自带的假值会排在首位，
+    # 取首段就能靠换 IP 绕过锁定（安全审计第 6 条）。
+    ip = get_trusted_client_ip(
+        request.headers.get("X-Real-IP") if request else None,
         request.headers.get("X-Forwarded-For") if request else None,
         request.client.host if request and request.client else None,
     )
@@ -316,10 +326,18 @@ if _CONVERTER_EMBEDDED:
             "/gw 未取得桌面端登录凭据，/gw/v1/* 将返回 503。"
             "请确认桌面端已登录，或用 CODEBUDDY_AUTH_DIR 指定 auth 目录。"
         )
-    elif not _conv_cfg["api_key"]:
-        _log.warning(
-            "/gw 可用但 CONVERTER_API_KEY 为空：/gw/v1/* 不校验任何 Key，"
-            "任何能访问本端口的人都能消耗账号额度。建议在 .env 中设置。"
-        )
 
-    app.mount("/gw", converter_app)
+    # ⚠️ fail-closed：没配 Key 就**不挂载** /gw，而不是挂上去裸奔。
+    # 原来只打一条 warning 就照常 mount，等于「默认无鉴权」——
+    # 只要换机/重部署时漏了 CONVERTER_API_KEY，整套 /gw/v1/*（含
+    # /v1/chat/completions、/v1/messages）就对任何访问者开放，可任意白嫖额度。
+    # 安全审计把它列为「中」风险，但那只是因为它看到线上恰好配了 Key。
+    # 宁可少一个功能，也不要一个默认开放的后门。
+    if not _conv_cfg["api_key"]:
+        _log.error(
+            "未配置 CONVERTER_API_KEY —— **拒绝挂载 /gw**（拒绝默认无鉴权的网关）。"
+            "如需使用内嵌网关，请在 .env 中设置 CONVERTER_API_KEY 后重启。"
+        )
+    else:
+        app.mount("/gw", converter_app)
+        _log.info("/gw 已挂载（已配置 CONVERTER_API_KEY，/v1/* 强制校验）")

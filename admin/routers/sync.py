@@ -20,10 +20,8 @@ import hashlib
 import hmac
 import json
 import logging
-import platform
-import socket
+import secrets
 import time
-import uuid
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -44,9 +42,18 @@ _K_SECRET = "sync_secret"
 
 
 def _generate_device_secret() -> str:
-    """基于本机特征生成唯一密钥（同机器每次调用结果相同，不同机器几乎必然不同）。"""
-    raw = f"{socket.gethostname()}-{platform.machine()}-{platform.processor() or ''}-{uuid.getnode()}"
-    return hashlib.sha256(raw.encode()).hexdigest()[:32]  # 取前 32 位作为可读密钥
+    """生成同步密钥：`secrets.token_hex(32)` = 256 bit 密码学安全随机。
+
+    安全审计第 4 条：原实现是
+        sha256(f"{hostname}-{machine}-{processor}-{mac}")[:32]
+    只有 128 bit，且输入是**主机特征**而非随机数 —— 可预测性明显高于纯随机
+    （攻击者若能猜到宿主名/CPU/MAC 就能离线枚举验证）。
+    改成纯随机 256 bit 后，密钥空间不再依赖任何可观测特征。
+
+    注意：只有**新生成**的密钥受影响；已存库的密钥照旧使用，
+    且 `/api/sync/receive` 校验的是库里的值（不是重新推导），所以不影响既有配对。
+    """
+    return secrets.token_hex(32)
 
 
 class SyncConfigIn(BaseModel):

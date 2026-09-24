@@ -549,7 +549,13 @@ PASSTHROUGH_BODY_KEYS = {
 # FastAPI 应用
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="codebuddy2openai", version="2.0")
+# 文档默认关闭 —— 与主后台同一开关。挂在 /gw 下时它同样是公网可达的
+# 「完整攻击面清单」（/gw/openapi.json 会列出所有端点与参数 schema）。
+_ENABLE_DOCS = os.getenv("ADMIN_ENABLE_DOCS", "0") == "1"
+app = FastAPI(title="codebuddy2openai", version="2.0",
+              docs_url="/docs" if _ENABLE_DOCS else None,
+              redoc_url="/redoc" if _ENABLE_DOCS else None,
+              openapi_url="/openapi.json" if _ENABLE_DOCS else None)
 CONFIG: dict = {"api_key": "", "cred": None, "log_path": None,
                 "desensitize": False, "no_compact": False}  # cred: CredentialManager | None
 
@@ -672,20 +678,27 @@ def _cached_balance(cred) -> dict:
 
 
 @app.get("/health")
-def health():
-    cred = CONFIG["cred"]
-    info: dict = {"status": "ok", "platform": sys.platform, "python": sys.version.split()[0],
-                  "auth_file": str(find_auth_file() or "(未找到)"), "mode": "direct-proxy (native function calling)"}
-    if cred is not None:
-        try:
-            info["credential"] = cred.summary()
-        except Exception as e:
-            info["credential_error"] = str(e)
-        try:
-            info["balance"] = _cached_balance(cred)
-        except Exception as e:
-            info["balance_error"] = str(e)
-    return info
+def health(authorization: Optional[str] = Header(default=None),
+           x_api_key: Optional[str] = Header(default=None, alias="X-Api-Key")):
+    """探活。**必须鉴权**，且只回最小字段。
+
+    安全审计「高风险」项：原实现既不调用 `_check_auth()`，又把
+    `auth_file`（服务器绝对路径）、`credential`（账号 uid + **手机号**昵称）
+    与 `balance`（积分余额）一起返回给**任何匿名访问者**。
+    这些是画像/社工/横向移动的优质素材，且同一文件里的 `/v1/models`、
+    `/v1/balance` 本来就是校验的 —— 唯独它漏了。
+
+    现在：未带正确 Key → 401；带了也只回「活着 + 凭据是否加载」，
+    不再暴露路径、账号标识与余额。
+    """
+    _check_auth(authorization, x_api_key)
+    return {
+        "status": "ok",
+        "platform": sys.platform,
+        "python": sys.version.split()[0],
+        "credential_loaded": CONFIG["cred"] is not None,
+        "mode": "direct-proxy (native function calling)",
+    }
 
 
 @app.get("/v1/models")

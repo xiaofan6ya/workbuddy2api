@@ -19,8 +19,18 @@ from admin import backend, growth_plans, jobrunner
 from admin.config import settings
 from admin.db import SessionLocal, get_db
 from admin.models import Account
+from admin.security import require_admin
 
-router = APIRouter(prefix="/api/growth", tags=["growth"])
+# ⚠️ 必须整组挂 require_admin（安全审计「严重」项）。
+# 历史实现的这个 router **一个鉴权依赖都没有**，于是：
+#   * `/api/growth/accounts/{id}/tasks` 可以被匿名者从 id=1 递增枚举，
+#     直接拿到全部账号的 uid 与**显示名**（实测泄露 18022387641 这类手机号）；
+#   * `/api/growth/run-async`、`/run`、`/accept`、`/claim` 可以被匿名者直接调用，
+#     在服务器上启动批量任务、真实消耗账号额度并写库 —— 不只是信息泄露，
+#     是**有副作用**的未授权操作。
+# 挂在 router 上而不是逐个接口，是为了杜绝「以后新增接口又忘了加」。
+router = APIRouter(prefix="/api/growth", tags=["growth"],
+                   dependencies=[Depends(require_admin)])
 
 #: 任务定义缓存 {"tasks": [...], "synced_at": iso}
 _task_cache: dict = {}

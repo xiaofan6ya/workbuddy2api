@@ -70,6 +70,7 @@
   - [10.10 客户端版本与逆向产物：自动发现 / 自动产出](#1010-客户端版本与逆向产物自动发现--自动产出)
   - [10.11 非流式：一个必须修的协议违约](#1011-非流式一个必须修的协议违约)
   - [10.12 这批改动的验证](#1012-这批改动的验证)
+- [10.13 安全加固（2026-09-24 外部审计后的修复）](#1013-安全加固2026-09-24-外部审计后的修复)
 - [十一、免责声明与协议](#十一免责声明与协议)
 - [十二、致谢与引用声明（Credits & References）](#十二致谢与引用声明credits--references)
 
@@ -321,7 +322,7 @@ WORKBUDDY_VERSION              # 默认 2.0.0
 
 ### 3.5 环境变量（admin）
 
-`ADMIN_DATABASE_URL` · `ADMIN_REDIS_URL` · `ADMIN_BACKEND` · `ADMIN_USERNAME` · `ADMIN_PASSWORD` · `ADMIN_JWT_SECRET`（≥32 字节）· `ADMIN_JWT_EXPIRE_HOURS` · `ADMIN_COST_PER_TOKEN` · `ADMIN_ACCOUNT_SELECT`（`remain` / `lru` / `weighted`）· `ADMIN_PORT` · `ADMIN_CLIENT_AUTH_DIR`
+`ADMIN_DATABASE_URL` · `ADMIN_REDIS_URL` · `ADMIN_BACKEND` · `ADMIN_USERNAME` · `ADMIN_PASSWORD` · `ADMIN_JWT_SECRET`（≥32 字节）· `ADMIN_JWT_EXPIRE_HOURS` · `ADMIN_COST_PER_TOKEN` · `ADMIN_ACCOUNT_SELECT`（`remain` / `lru` / `weighted`）· `ADMIN_PORT` · `ADMIN_CLIENT_AUTH_DIR` · `CONVERTER_API_KEY`（内嵌 `/gw` 网关的 Key；**不配则不挂载 `/gw`**）· `ADMIN_ENABLE_DOCS`（默认 `0`，公网请保持关闭，见 [10.13](#1013-安全加固2026-09-24-外部审计后的修复)）
 
 流量治理（详见 [第十章](#十稳定性与流量治理限速--并发--保活)，完整清单见 `.env.example`）：
 
@@ -1878,6 +1879,35 @@ cache miss     5.2 ms      每 30 秒最多一次
 
 > `tests/` 与 `scripts/*.py` 属本地回归工具，已在 `.gitignore` 中，不进仓库；
 > 上面的命令在本地检出里照常可跑。
+
+### 10.13 安全加固（2026-09-24 外部审计后的修复）
+
+一份第三方审计报告（审计对象 `https://2api.xiaofanya.top`）指出若干**未鉴权**暴露面。
+逐条复核后确认属实并全部修复。**这些不是「理论风险」，是当时公网可复现的**：
+
+| 问题 | 危害 | 修复 |
+|------|------|------|
+| `/api/growth/*` **整组无鉴权** | 匿名者可 `GET /api/growth/accounts/{id}/tasks` 从 `id=1` 递增枚举，拿到全部账号 UID 与**显示名**（实测泄露 `18022387641` 这类手机号）；`POST /run-async` 还能**真实启动批量任务、消耗账号积分并写库** | 整个 router 挂 `dependencies=[Depends(require_admin)]` |
+| `/gw/health` 无鉴权且回吐敏感字段 | 泄露服务器绝对路径、账号 UID、**手机号昵称**、积分余额 | 加 `_check_auth()`，且只回 `status/platform/python/credential_loaded` |
+| `/docs`、`/redoc`、`/openapi.json`、`/gw/docs`、`/gw/openapi.json` 公网开放 | 等于给攻击者一份现成的完整攻击面清单 —— **审计方正是靠 `/openapi.json` 里「这批路径鉴权参数为空」一眼定位到上面那条漏洞的** | 默认全部关闭（`ADMIN_ENABLE_DOCS=1` 才开） |
+| `/gw` 网关鉴权是「可选」的 | `converter._check_auth()` 是 `if not key: return` —— 只要漏配 `CONVERTER_API_KEY`，`/gw/v1/*` 全部接口对任何访问者开放，可任意白嫖额度。线上当时恰好配了，纯属运气 | **fail-closed**：没配 Key 就**拒绝挂载** `/gw`，而不是挂上去裸奔 |
+| 登录锁定信任 `X-Forwarded-For` 首段 | nginx 用的是 `$proxy_add_x_forwarded_for`（**追加**语义），客户端自带的假值会排在首位 → 每次换个假 IP 就能绕过登录锁定 | 新增 `get_trusted_client_ip()`：优先 `X-Real-IP`（nginx 覆写、不可伪造），否则取 XFF **最后一跳**；审计展示仍用 `get_client_ip()` |
+| 同步密钥由主机特征派生、仅 128 bit | 可预测性高于纯随机 | 改 `secrets.token_hex(32)`（256 bit，仅影响新生成的密钥；`/api/sync/receive` 校验的是库里的值，不影响既有配对） |
+
+**修复时特意保留的部分**（防止「加固」变成「改坏」）：`require_admin` 只加在原来
+缺的那一处，其余 `/api/*` 与 `/v1/*` 的既有鉴权一个没动；`/gw` 只是改成 fail-closed，
+**没有移除**（线上已配 Key，Claude Code 等走 `/gw/v1/messages` 的客户端不受影响）。
+回归用例把审计的每条断言都变成了可复跑的检查（本地 42 项 + 生产 37 项），
+既验证「漏洞已关」，也验证「原有鉴权没被改坏」。
+
+**尚未处理**（已记录，留作后续）：
+- `/api/sync/receive` 仍无失败频率限制（`admin/ratelimit.py` 可复用）；
+- 无 CSP 响应头；前端依赖 `cdn.tailwindcss.com` / `cdn.jsdelivr.net` 且无 SRI
+  —— 第三方 CDN 被投毒会直接导致后台失陷，建议本地化这两个资源。
+
+> 复核结论：**账号 token / 密码没有泄露**。泄露的是账号标识（UID + 显示名，部分显示名
+> 就是手机号）、积分余额与服务器路径。这些都是画像/社工素材，所以仍按高优先级修。
+
 
 **三层验证缺一不可**，因为每层能抓到的问题不同：
 

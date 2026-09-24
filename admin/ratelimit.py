@@ -28,11 +28,41 @@ _memory_locked: dict[str, float] = {}       # ip -> 锁定到期时间戳
 
 
 def get_client_ip(forwarded_for: Optional[str], direct_ip: Optional[str]) -> str:
-    """取真实客户端 IP：反向代理场景用 X-Forwarded-For 首段。"""
+    """取真实客户端 IP：反向代理场景用 X-Forwarded-For 首段。
+
+    仅用于**审计展示**（日志里的来源 IP）。安全判定请用
+    `get_trusted_client_ip()` —— 首段是可以被客户端随便伪造的。
+    """
     if forwarded_for:
         first = forwarded_for.split(",")[0].strip()
         if first:
             return first
+    return direct_ip or "unknown"
+
+
+def get_trusted_client_ip(real_ip: Optional[str], forwarded_for: Optional[str],
+                          direct_ip: Optional[str]) -> str:
+    """取**客户端无法伪造**的来源 IP，用于登录锁定这类安全判定。
+
+    为什么不能直接用 `get_client_ip`：nginx 站点配置里是
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    这是**追加**语义 —— 客户端自带的假 XFF 会排在**首位**，而
+    `get_client_ip` 恰好取首段，于是攻击者每次换一个假 IP
+    就能把登录失败计数摊到无限多个「IP」上，登录锁定形同虚设
+    （安全审计第 6 条）。
+
+    可信来源按优先级取：
+      1. `X-Real-IP` —— nginx 用 `$remote_addr` **覆写**，不可伪造；
+      2. X-Forwarded-For 的**最后一段** —— `$proxy_add_x_forwarded_for`
+         追加进去的正是 nginx 看到的真实对端地址（离我们最近的一跳）；
+      3. 直连 socket 地址。
+    """
+    if real_ip and real_ip.strip():
+        return real_ip.strip()
+    if forwarded_for:
+        parts = [p.strip() for p in forwarded_for.split(",") if p.strip()]
+        if parts:
+            return parts[-1]
     return direct_ip or "unknown"
 
 

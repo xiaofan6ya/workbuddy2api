@@ -61,6 +61,16 @@ class Settings:
     HOST = os.getenv("ADMIN_HOST", "0.0.0.0")
     PORT = int(os.getenv("ADMIN_PORT", "8790"))
 
+    #: 是否对公网开放 OpenAPI 文档（`/docs`、`/redoc`、`/openapi.json`）
+    #: 以及内嵌网关的 `/gw/docs`、`/gw/openapi.json`。
+    #:
+    #: 默认**关闭**。安全审计把它列为「中高」风险，理由很直接：
+    #: 对攻击者来说它就是一张现成的完整攻击面清单 —— 审计方正是靠
+    #: `/openapi.json` 里「这批路径的鉴权参数是空的」一眼定位到
+    #: `/api/growth/*` 那个未授权漏洞的。
+    #: 本地排障要看文档时设 `ADMIN_ENABLE_DOCS=1`。
+    ENABLE_DOCS = os.getenv("ADMIN_ENABLE_DOCS", "0") == "1"
+
     # /v1/messages（Anthropic Messages API）的模型档次映射。
     # Claude Code 发的是 claude-opus-* / claude-sonnet-* / claude-haiku-* 这类名字，
     # 上游不认；这里按档次落到本后台白名单里的模型名。
