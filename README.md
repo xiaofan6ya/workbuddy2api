@@ -330,6 +330,9 @@ WORKBUDDY_VERSION              # 默认 2.0.0
 - `ADMIN_POOL_MAX_ROTATE`（默认 `3`）—— 单请求最多换号次数
 - `ADMIN_SESSION_STICKY`（默认 `1`）· `ADMIN_SESSION_STICKY_TTL`（1800）· `ADMIN_SESSION_STICKY_GC`（300）
 - `ADMIN_POOL_SOFT_RATE` / `ADMIN_POOL_SOFT_RATE_MAX`（600 / 7200）—— 429 冷却基数与封顶
+- `ADMIN_POOL_MAX_ROTATE`（默认 `6`）—— 单请求最多换号次数。**注意取舍**：`transport` 类失败
+  （如上游流静默）每个账号要等满 `STREAM_IDLE_TIMEOUT`（180s）才失败，调大它会线性拉长最坏等待
+  （6 × 180s = 18 分钟）；它只在「首个账号卡住、后续账号快速失败」时有净收益
 - `ADMIN_POOL_REQUEST_RATE` / `ADMIN_POOL_REQUEST_RATE_MAX`（20 / 120）—— **模型繁忙**（`14003`）时该「账号×模型」对的冷却基数与封顶。远小于上一行是有意的：见 [10.4.1](#1041-事故复盘一次-14003-抖动如何变成-10-分钟全站-503)
 - `ADMIN_POOL_BREAKER_THRESHOLD` / `_COOLDOWN` / `_COOLDOWN_MAX`（5 / 600 / 21600）—— 熔断
 - `ADMIN_POOL_SESSION_DEAD_THRESHOLD`（默认 `3`）—— 连续几次 12153 才禁用账号

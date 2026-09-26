@@ -125,7 +125,17 @@ class Settings:
     #: 会话绑定 GC 周期（秒）。
     STICKY_GC_SECONDS = int(os.getenv("ADMIN_SESSION_STICKY_GC", "300"))
     #: 单请求最多换号次数（原实现硬编码 3，这里可配）。
-    MAX_ROTATE = int(os.getenv("ADMIN_POOL_MAX_ROTATE", "3"))
+    #:
+    #: 2026-09-26 从 3 调到 6。原因：号池有 16 个账号，而单请求只试 3 个，
+    #: 用户看到「已尝试 3 个账号」会以为号池坏了。实测那次的失败是**流静默超时**
+    #: （上游 180s 没吐字节，日志里 total≈184092ms），不是限流 —— 所有账号都是
+    #: 健康的（0 冷却 / 0 熔断 / 0 降权 / 0 欠费）。
+    #:
+    #: 注意这里有个**必须知道的取舍**：transport 类失败每个账号要等满
+    #: `STREAM_IDLE_TIMEOUT`(180s) 才失败，所以调大它会线性拉长最坏等待
+    #: （6 × 180s = 18 分钟）。它只在「首个账号卡住、后续账号快速失败」时才有净收益。
+    #: 想更激进就设 `ADMIN_POOL_MAX_ROTATE`，想保守就设回 3。
+    MAX_ROTATE = int(os.getenv("ADMIN_POOL_MAX_ROTATE", "6"))
     #: 软限流（429）冷却基数（秒）；连续触发按 2 倍指数退避，封顶 SOFT_RATE_MAX。
     SOFT_RATE_SECONDS = int(os.getenv("ADMIN_POOL_SOFT_RATE", "600"))
     #: 软冷却指数退避封顶（秒）。默认 2h，与参考实现一致。

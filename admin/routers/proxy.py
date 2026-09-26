@@ -74,6 +74,20 @@ def _stream_timeout() -> httpx.Timeout:
 
 _logger = logging.getLogger("proxy")
 
+
+def _exc_text(e: BaseException) -> str:
+    """把异常转成「类型 + 消息」，用于分类与落库。
+
+    为什么不能只用 `str(e)`：httpx 的多数网络异常 `str()` 出来只有
+    `"timed out"` / `""`，库里就只剩一句无用的「transport error」，
+    排障时分不清是 `ReadTimeout`（流静默超时，上游 180s 没吐字节 ——
+    换号大概率无用）还是 `ConnectError`（连不上 —— 换号可能有用），
+    而这两者的处置是相反的。带上类名就能一眼分辨。
+    """
+    name = type(e).__name__
+    msg = str(e).strip()
+    return f"{name}: {msg}" if msg else name
+
 # Responses API 适配器（converter 同款）；缺失时 /v1/responses 优雅降级为 501
 try:
     from responses_adapter import responses_request_to_chat, ResponsesStreamConverter
@@ -758,6 +772,11 @@ def _exhaustion_message(kind: str, last_msg: str, tried_accounts: int,
     base = f"{hint}；{tried}"
     if kind == "waf" and last_msg:
         return f"{base}，已暂停轮转；请稍后重试"
+    if kind == "transport" and last_msg:
+        # 把底层原因带上（如 ReadTimeout / ConnectError），否则用户只看到
+        # 「网络连接异常」而无法判断是自己网络、上游抖动还是模型卡住。
+        # 只取前 120 字符，避免把上游内部细节整段抛出去。
+        return f"{base}。底层原因：{last_msg[:120]}"
     return f"{base}。请稍后重试，或联系管理员查看网关日志。"
 
 
@@ -1065,6 +1084,11 @@ def _apply_account_policy(db: Session, acc: Account, kind: str, status: int,
     elif kind == "transport":
         # 网络层抖动：不累计 errCount（不是账号的错），但要计入连败降权 ——
         # 「不知道原因的持续失败」正是降权的目标形态。
+        #
+        # 这里**必须**把真实异常留在 last_err_msg 里。原实现写的是
+        # `(msg or "transport error")`，而调用方有时传空串，于是库里只留下
+        # 一句「transport error」—— 排障时完全看不出是 ReadTimeout（流静默超时，
+        # 上游 180s 没吐字节）还是 ConnectError（连不上），两者的处置完全相反。
         acc.consecutive_fails = (acc.consecutive_fails or 0) + 1
         acc.last_err_at = now
         acc.last_err_msg = (msg or "transport error")[:255]
@@ -2133,11 +2157,11 @@ async def chat_completions(
                                 POOL.release(held_uid)
                                 held_uid = ""
                                 return
-                            kind = _classify_error(0, str(e))
-                            _apply_account_policy(db2, acc_i, kind, 0, str(e), model=m)
+                            kind = _classify_error(0, _exc_text(e))
+                            _apply_account_policy(db2, acc_i, kind, 0, _exc_text(e), model=m)
                             _maybe_degrade(db2, acc_i)
                             last_err_kind = kind
-                            last_err_msg = str(e)
+                            last_err_msg = _exc_text(e)
                             sess_i.close()
                             POOL.release(held_uid)
                             held_uid = ""
@@ -2373,8 +2397,8 @@ async def responses_proxy(
                                           seq=seq, error_kind="success")
                             return JSONResponse(content=obj)
                     except Exception as e:
-                        kind = _classify_error(0, str(e))
-                        _apply_account_policy(db2, acc_i, kind, 0, str(e), model=m)
+                        kind = _classify_error(0, _exc_text(e))
+                        _apply_account_policy(db2, acc_i, kind, 0, _exc_text(e), model=m)
                         _maybe_degrade(db2, acc_i)
                         sess_i.close()
                         POOL.release(held_uid)
@@ -2552,11 +2576,11 @@ async def responses_proxy(
                                 POOL.release(held_uid)
                                 held_uid = ""
                                 return
-                            kind = _classify_error(0, str(e))
-                            _apply_account_policy(db2, acc_i, kind, 0, str(e), model=m)
+                            kind = _classify_error(0, _exc_text(e))
+                            _apply_account_policy(db2, acc_i, kind, 0, _exc_text(e), model=m)
                             _maybe_degrade(db2, acc_i)
                             last_err_kind = kind
-                            last_err_msg = str(e)
+                            last_err_msg = _exc_text(e)
                             sess_i.close()
                             POOL.release(held_uid)
                             held_uid = ""
@@ -2794,8 +2818,8 @@ async def anthropic_messages(
                                           seq=seq, error_kind="success")
                             return JSONResponse(content=msg_obj)
                     except Exception as e:
-                        kind = _classify_error(0, str(e))
-                        _apply_account_policy(db2, acc_i, kind, 0, str(e), model=m)
+                        kind = _classify_error(0, _exc_text(e))
+                        _apply_account_policy(db2, acc_i, kind, 0, _exc_text(e), model=m)
                         _maybe_degrade(db2, acc_i)
                         sess_i.close()
                         POOL.release(held_uid)
@@ -2975,11 +2999,11 @@ async def anthropic_messages(
                                 POOL.release(held_uid)
                                 held_uid = ""
                                 return
-                            kind = _classify_error(0, str(e))
-                            _apply_account_policy(db2, acc_i, kind, 0, str(e), model=m)
+                            kind = _classify_error(0, _exc_text(e))
+                            _apply_account_policy(db2, acc_i, kind, 0, _exc_text(e), model=m)
                             _maybe_degrade(db2, acc_i)
                             last_err_kind = kind
-                            last_err_msg = str(e)
+                            last_err_msg = _exc_text(e)
                             sess_i.close()
                             POOL.release(held_uid)
                             held_uid = ""
