@@ -132,7 +132,12 @@ def run_task(task: str, db, schedule: "Schedule | None" = None) -> dict:
                         except Exception:
                             pass
                 acc_router._sync_credit_snapshot(a, packages)
-                ok += 1
+                collection = getattr(packages, "metadata", None)
+                if collection and not collection["complete"]:
+                    fail += 1
+                    failed_names.append(_account_label(a))
+                else:
+                    ok += 1
             except Exception:
                 fail += 1
                 failed_names.append(_account_label(a))

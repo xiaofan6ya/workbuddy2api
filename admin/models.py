@@ -86,12 +86,13 @@ class AccountModelCooldown(Base):
     """
 
     __tablename__ = "account_model_cool"
+    __table_args__ = (Index("ix_account_model_cool_model_until", "model", "until"),)
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     account_id = Column(Integer, nullable=False, index=True)
     model = Column(String(120), nullable=False, default="")
     until = Column(DateTime, nullable=True)          # 冷却截止
-    kind = Column(String(24), default="")            # model_rate | model_block
+    kind = Column(String(24), default="")            # model_daily | model_rate | model_block
     reason = Column(String(255), default="")
     hits = Column(Integer, default=0)                # 命中次数（model_block 指数退避用）
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

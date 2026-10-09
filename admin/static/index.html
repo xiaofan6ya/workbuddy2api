@@ -679,6 +679,7 @@
     input,select,textarea{ outline:none; }
     input:focus,select:focus,textarea:focus{ border-color:var(--brand); box-shadow:0 0 0 3px var(--brand-soft); }
   </style>
+  <link rel="stylesheet" href="/static/console.css" />
 </head>
 <body>
 
@@ -729,20 +730,20 @@
           <span>导航菜单</span>
           <button onclick="closeSideMenu()" aria-label="关闭菜单"><i class="fa-solid fa-xmark"></i></button>
         </div>
-        <button class="side-item active" data-tab="accounts"><i class="fa-solid fa-user-group"></i> 账号池</button>
+        <button class="side-item active" data-tab="accounts"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="7" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3m2-17a3 3 0 0 1 0 6m2 4a5 5 0 0 1 2 4v3"/></svg> 账号池</button>
         <!-- 积分到期：角标显示「7 天内到期的账号数」，
              让用户在没打开面板时就能看到有额度要作废。 -->
-        <button class="side-item" data-tab="credits"><i class="fa-solid fa-hourglass-half"></i> 积分到期
+        <button class="side-item" data-tab="credits"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 2h12M6 22h12M7 2v5l10 10v5M17 2v5L7 17v5"/></svg> 积分到期
           <span class="side-dot hidden" id="sideExpiringDot">0</span></button>
-        <button class="side-item" data-tab="usage"><i class="fa-solid fa-chart-pie"></i> 使用记录</button>
-        <button class="side-item" data-tab="keys"><i class="fa-solid fa-key"></i> API Keys</button>
+        <button class="side-item" data-tab="usage"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-9-9v9Zm-5-9a9 9 0 0 1 5 5h-5Z"/></svg> 使用记录</button>
+        <button class="side-item" data-tab="keys"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="8" r="5"/><path d="m12 12 9 9m-5-5 3-3m-1 5 3-3"/></svg> API Keys</button>
         <button class="side-item" data-tab="models"><i class="fa-solid fa-shapes"></i> 模型配置</button>
-        <button class="side-item" data-tab="groups"><i class="fa-solid fa-layer-group"></i> 分组管理</button>
-        <button class="side-item" data-tab="schedules"><i class="fa-solid fa-clock-rotate-left"></i> 定时任务</button>
-        <button class="side-item" data-tab="logs"><i class="fa-solid fa-list"></i> 用量日志</button>
-        <button class="side-item" data-tab="client"><i class="fa-solid fa-fingerprint"></i> 客户端参数</button>
-        <button class="side-item" data-tab="sync"><i class="fa-solid fa-cloud-arrow-up"></i> 同步设置</button>
-        <button class="side-item" data-tab="settings"><i class="fa-solid fa-gear"></i> 设置</button>
+        <button class="side-item" data-tab="groups"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 10 5-10 5L2 8Zm-9 10 9 5 9-5M3 18l9 5 9-5"/></svg> 分组管理</button>
+        <button class="side-item" data-tab="schedules"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4v5h5m-5 0a9 9 0 1 1 0 7M12 7v5l3 2"/></svg> 定时任务</button>
+        <button class="side-item" data-tab="logs"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg> 用量日志</button>
+        <button class="side-item" data-tab="client"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 0 1 16 0m-13 5v-5a5 5 0 0 1 10 0v3m-7 5v-8a2 2 0 0 1 4 0v5m-1 5a12 12 0 0 0 4-4M3 16v-1"/></svg> 客户端参数</button>
+        <button class="side-item" data-tab="sync"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 18a5 5 0 1 1 1-10 6 6 0 0 1 11 1 4 4 0 0 1 0 8m-6 4V11m-4 4 4-4 4 4"/></svg> 同步设置</button>
+        <button class="side-item" data-tab="settings"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m10 3-1 3-3 1-2 3 2 2v3l2 2 3-1 2 2 3-1 1-3 3-1 1-3-3-2V7l-3-2-2 1Z"/><circle cx="12" cy="12" r="3"/></svg> 设置</button>
         <!-- 抽屉内的退出入口（移动端顶栏放不下，收进菜单更自然） -->
         <button class="side-item side-item-quit" onclick="logout()"><i class="fa-solid fa-right-from-bracket"></i> 退出登录</button>
       </nav>
@@ -760,32 +761,50 @@
 
     <!-- 账号面板 -->
     <section id="panel-accounts">
-      <div class="page-head">
+      <header class="page-head">
         <div>
           <h1>账号池</h1>
-          <p>共 <span id="accHeadCount">-</span> 个账号<span id="accHeadBreak"></span>。
-             <b>积分到期</b>一列显示每个号最近要作废的积分包；
-             列表顺序不是调度的使用顺序（要看优先级请到「积分到期」）。
-             <b>统计只算启用中的账号</b> —— 已禁用号的余额用不到，不会计入。</p>
+          <p>统一管理账号、可用积分与登录状态。</p>
         </div>
-        <div class="flex flex-wrap gap-2">
-          <button onclick="growthRunBatch()" class="text-sm px-3 py-1.5 rounded-lg border hover:bg-slate-50" title="对全部账号：自动参与并完成可自动化的成长任务，然后领奖"><i class="fa-solid fa-seedling mr-1 text-emerald-600"></i> 批量做任务</button>
-          <button onclick="catTravelBatch()" class="text-sm px-3 py-1.5 rounded-lg border hover:bg-slate-50" title="对全部账号执行：领养(+300) → 派猫 → 领奖"><i class="fa-solid fa-cat mr-1 text-pink-600"></i> 猫猫旅行</button>
-          <button onclick="scanLocal()" class="text-sm px-3 py-1.5 rounded-lg border hover:bg-slate-50"><i class="fa-solid fa-magnifying-glass mr-1"></i> 扫描本机</button>
-          <button onclick="refreshAll()" class="text-sm px-3 py-1.5 rounded-lg border hover:bg-slate-50"><i class="fa-solid fa-rotate mr-1"></i> 全部刷新</button>
-          <button onclick="openPhoneLogin()" class="text-sm px-3 py-1.5 rounded-lg border hover:bg-slate-50" title="用手机号验证码登录，全自动完成授权并把凭证加入号池（无需安装客户端）"><i class="fa-solid fa-mobile-screen-button mr-1 text-emerald-600"></i> 手机号登录</button>
-          <button onclick="openUpload()" class="text-sm px-3 py-1.5 rounded-lg btn-primary"><i class="fa-solid fa-file-import mr-1"></i> 批量上传</button>
-          <button onclick="openExport()" class="text-sm px-3 py-1.5 rounded-lg border hover:bg-slate-50" title="导出账号登录态（.info 原文），可直接再导入"><i class="fa-solid fa-file-export mr-1 text-sky-600"></i> 批量导出</button>
-          <button onclick="openAddAccount()" class="text-sm px-3 py-1.5 rounded-lg border hover:bg-slate-50"><i class="fa-solid fa-plus mr-1"></i> 单个添加</button>
+      </header>
+      <div class="account-intake">
+        <div class="intake-copy">
+          <h2>添加与迁移账号</h2>
+          <p>登录新账号，或从本机与备份中恢复已有账号。</p>
+        </div>
+        <div class="intake-actions">
+          <button type="button" onclick="openPhoneLogin()" class="console-btn primary"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/></svg>手机号登录</button>
+          <button type="button" onclick="openUpload()" class="console-btn "><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m-4 4 4-4 4 4M4 16v4h16v-4"/></svg>导入账号</button>
+          <span class="intake-divider" aria-hidden="true"></span>
+          <button type="button" onclick="scanLocal()" class="console-btn quiet"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="13" rx="2"/><path d="M8 21h8m-4-5v5"/></svg>扫描本机</button>
+          <button type="button" onclick="openExport()" class="console-btn quiet"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v12m-4-4 4 4 4-4M4 16v4h16v-4"/></svg>导出</button>
+          <button type="button" onclick="openAddAccount()" class="console-btn quiet"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>手动添加</button>
         </div>
       </div>
-      <div class="flex gap-2 mb-3">
-        <input id="accSearch" oninput="renderAccPage(1)" placeholder="搜索名称 / UID" class="w-full border rounded-lg px-3 py-2 text-sm" />
+      <div class="account-toolbar">
+        <div class="account-filters" role="group" aria-label="按账号状态筛选">
+          <button type="button" data-account-filter="all" aria-pressed="true" onclick="setAccountFilter('all')">全部 <span class="filter-count" id="filterAllCount">0</span></button>
+          <button type="button" data-account-filter="active" aria-pressed="false" onclick="setAccountFilter('active')">已启用 <span class="filter-count" id="filterActiveCount">0</span></button>
+          <button type="button" data-account-filter="disabled" aria-pressed="false" onclick="setAccountFilter('disabled')">已禁用 <span class="filter-count" id="filterDisabledCount">0</span></button>
+        </div>
+        <div class="account-tools">
+          <label class="account-search"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg><input id="accSearch" oninput="renderAccPage(1)" placeholder="搜索名称 / UID" aria-label="搜索账号名称或 UID" /></label>
+          <button type="button" onclick="refreshAll()" class="console-btn quiet"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-1l2 3M4 15l2 3a7 7 0 0 0 12-1"/></svg>刷新全部</button>
+          <details class="action-menu" id="accountBatchMenu">
+            <summary class="console-btn"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg>管理操作 <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m8 10 4 4 4-4"/></svg></summary>
+            <div class="action-menu-panel">
+              <div class="action-menu-label">额度与批量管理</div>
+              <button type="button" onclick="closeAccountMenu(); openModelLimits()"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9l6 3"/><circle cx="12" cy="12" r="9"/></svg>模型额度与冷却</button>
+              <button type="button" onclick="closeAccountMenu(); growthRunBatch()"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5H5v16h14V5h-4"/><rect x="9" y="3" width="6" height="4" rx="1"/><path d="m8 13 3 3 5-6"/></svg>成长任务与领奖</button>
+              <button type="button" onclick="closeAccountMenu(); catTravelBatch()"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m3 9 18-6-6 18-4-8-8-4Zm8 4 10-10"/></svg>猫猫旅行与领奖</button>
+            </div>
+          </details>
+        </div>
       </div>
       <!-- 账号表：紧凑行（单行约 44px），一屏能看 12+ 行。
            原来是 142px/行（到期列里塞了 2 个积分包明细），一屏只看 4 行。
            积分明细移交给悬停 title 与「积分明细」弹窗。 -->
-      <div class="card overflow-x-auto max-h-[70vh]">
+      <div id="accountTableWrap" class="card overflow-x-auto max-h-[70vh]">
         <table class="acc-table" style="min-width:960px">
           <thead>
             <tr>
@@ -799,6 +818,11 @@
         </table>
       </div>
       <div id="accPager" class="flex justify-between items-center mt-3 text-sm text-slate-500"></div>
+      <div class="account-footnote">
+        <span>共 <span id="accHeadCount">-</span> 个账号<span id="accHeadBreak"></span></span>
+        <span>积分统计仅包含已启用账号</span>
+        <span>调度优先级与到期明细可在「积分到期」查看</span>
+      </div>
     </section>
 
     <!-- Key 面板 -->
@@ -1914,6 +1938,111 @@ function accExpiryCell(a) {
     <span class="acc-exp-note">${note}</span>${cnt}</span>`;
 }
 
+function consoleIcon(name) {
+  const paths = {"fa-user-group": "<circle cx=\"9\" cy=\"7\" r=\"3\"/><path d=\"M3 21v-3a6 6 0 0 1 12 0v3m2-17a3 3 0 0 1 0 6m2 4a5 5 0 0 1 2 4v3\"/>", "fa-hourglass-half": "<path d=\"M6 2h12M6 22h12M7 2v5l10 10v5M17 2v5L7 17v5\"/>", "fa-chart-pie": "<path d=\"M21 12a9 9 0 1 1-9-9v9Zm-5-9a9 9 0 0 1 5 5h-5Z\"/>", "fa-key": "<circle cx=\"8\" cy=\"8\" r=\"5\"/><path d=\"m12 12 9 9m-5-5 3-3m-1 5 3-3\"/>", "fa-cubes": "<path d=\"m12 3 8 4v10l-8 4-8-4V7Zm-8 4 8 4 8-4M12 11v10\"/>", "fa-layer-group": "<path d=\"m12 3 10 5-10 5L2 8Zm-9 10 9 5 9-5M3 18l9 5 9-5\"/>", "fa-clock-rotate-left": "<path d=\"M3 4v5h5m-5 0a9 9 0 1 1 0 7M12 7v5l3 2\"/>", "fa-list": "<path d=\"M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01\"/>", "fa-fingerprint": "<path d=\"M4 12a8 8 0 0 1 16 0m-13 5v-5a5 5 0 0 1 10 0v3m-7 5v-8a2 2 0 0 1 4 0v5m-1 5a12 12 0 0 0 4-4M3 16v-1\"/>", "fa-cloud-arrow-up": "<path d=\"M6 18a5 5 0 1 1 1-10 6 6 0 0 1 11 1 4 4 0 0 1 0 8m-6 4V11m-4 4 4-4 4 4\"/>", "fa-gear": "<path d=\"m10 3-1 3-3 1-2 3 2 2v3l2 2 3-1 2 2 3-1 1-3 3-1 1-3-3-2V7l-3-2-2 1Z\"/><circle cx=\"12\" cy=\"12\" r=\"3\"/>", "fa-seedling": "<path d=\"M12 21v-9M12 16C5 16 3 11 3 7c6 0 9 3 9 9Zm0-4c0-6 3-9 9-9 0 6-3 9-9 9Z\"/>", "fa-cat": "<path d=\"m5 9-1-6 6 3h4l6-3-1 6a8 8 0 1 1-14 0Zm4 4h.01M15 13h.01m-4 4h2\"/>", "fa-list-ul": "<path d=\"M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01\"/>", "fa-chart-line": "<path d=\"M3 3v18h18M6 15l4-5 4 3 6-7\"/>", "fa-right-to-bracket": "<path d=\"M14 3h6v18h-6M3 12h12m-4-4 4 4-4 4\"/>", "fa-rotate": "<path d=\"M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-1l2 3M4 15l2 3a7 7 0 0 0 12-1\"/>", "fa-file-export": "<path d=\"M12 3H4v18h12v-5M9 10h12m-4-4 4 4-4 4\"/>", "fa-power-off": "<path d=\"M12 2v10M6 5a9 9 0 1 0 12 0\"/>", "fa-trash": "<path d=\"M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7\"/>"};
+  return paths[name] ? `<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true">${paths[name]}</svg>` : '';
+}
+
+function accountActionDescription(title) {
+  const descriptions = {
+    '成长任务':'查看任务进度，完成任务并领取奖励',
+    '猫猫旅行':'查看旅行状态，派出或领取奖励',
+    '积分明细（逐包到期日）':'查看积分包余额、有效期与到期风险',
+    '请求用量':'查看该账号的上游请求与消耗明细',
+    '注入本机客户端':'将该账号登录态写入本机客户端',
+    '刷新余额与到期快照':'同步最新余额及积分包到期信息',
+    '导出登录态':'下载该账号凭据，供备份或重新导入',
+    '启用/禁用':'控制该账号是否参与网关调度',
+    '删除':'从账号池移除该账号'
+  };
+  return descriptions[title] || '';
+}
+function accountLimitBadge(a) {
+  const limits = a.model_limits || [];
+  const gateway = a.gateway_state === 'cooling'
+    ? '<span class="gateway-chip">冷却中</span>' : '';
+  if (!limits.length) return gateway;
+  const daily = limits.filter(l => l.kind === 'model_daily').length;
+  return gateway + `<button class="limit-chip" onclick="openModelLimits(${a.id})" data-tooltip="${daily ? '模型日额度耗尽' : '模型暂时不可用'}" data-tooltip-description="${limits.length} 个模型冷却中，其他模型仍可调度" aria-label="查看模型冷却">${limits.length} 模型受限</button>`;
+}
+
+// One fixed tooltip avoids clipping by scroll containers and supports keyboard focus.
+let _actionTipTarget = null;
+let _actionTipTimer = null;
+function hideActionTooltip() {
+  clearTimeout(_actionTipTimer);
+  const tip = document.getElementById('actionTooltip');
+  if (tip) tip.hidden = true;
+  if (_actionTipTarget) _actionTipTarget.removeAttribute('aria-describedby');
+  _actionTipTarget = null;
+}
+function showActionTooltip(target, immediate = false) {
+  hideActionTooltip();
+  _actionTipTarget = target;
+  _actionTipTimer = setTimeout(() => {
+    if (!target.isConnected) return hideActionTooltip();
+    let tip = document.getElementById('actionTooltip');
+    if (!tip) {
+      tip = document.createElement('div'); tip.id = 'actionTooltip'; tip.role = 'tooltip';
+      document.body.appendChild(tip);
+    }
+    tip.innerHTML = `<strong>${esc(target.dataset.tooltip)}</strong><span>${esc(target.dataset.tooltipDescription || '')}</span>`;
+    tip.hidden = false;
+    target.setAttribute('aria-describedby', 'actionTooltip');
+    const r = target.getBoundingClientRect(), t = tip.getBoundingClientRect();
+    tip.style.left = Math.max(8, Math.min(innerWidth - t.width - 8, r.left + r.width / 2 - t.width / 2)) + 'px';
+    tip.style.top = (r.top > t.height + 12 ? r.top - t.height - 8 : r.bottom + 8) + 'px';
+  }, immediate ? 0 : 200);
+}
+document.addEventListener('pointerover', e => {
+  if (e.pointerType === 'touch') return;
+  const target = e.target.closest('[data-tooltip]');
+  if (target && !target.contains(e.relatedTarget)) showActionTooltip(target);
+});
+document.addEventListener('pointerout', e => {
+  if (_actionTipTarget && !_actionTipTarget.contains(e.relatedTarget)) hideActionTooltip();
+});
+document.addEventListener('focusin', e => {
+  const target = e.target.closest('[data-tooltip]');
+  if (target) showActionTooltip(target, true);
+});
+document.addEventListener('focusout', hideActionTooltip);
+document.addEventListener('scroll', hideActionTooltip, true);
+document.addEventListener('click', hideActionTooltip);
+document.addEventListener('keydown', e => { if (e.key === 'Escape') hideActionTooltip(); });
+window.addEventListener('resize', hideActionTooltip);
+
+async function openModelLimits(accountId = null) {
+  openModal(`<div class="section-head"><h3>模型额度与冷却</h3><button onclick="closeModal()" class="console-btn quiet" aria-label="关闭">关闭</button></div><div id="modelLimitsContent" class="limit-note">正在读取限额台账…</div>`, 'max-w-6xl');
+  try {
+    const [r, healthResponse] = await Promise.all([api('/api/accounts/model-limits'), api('/api/stats/model-health')]);
+    const healthResult = await safeJson(healthResponse);
+    const result = await safeJson(r);
+    const container = document.getElementById('modelLimitsContent');
+    if (!container) return;
+    if (!result.ok) { container.textContent = '读取失败，请稍后重试'; return; }
+    const d = result.data;
+    const entries = (d.items || []).filter(e => accountId == null || e.account_id === accountId);
+    const kind = {model_daily:'日额度耗尽',model_rate:'短时限流',model_block:'模型不可用'};
+    const source = {upstream:'官方恢复时间',estimated:'24 小时保守估计',backoff:'退避时间'};
+    container.innerHTML = `<p class="limit-note">积分余额与模型每日额度分别计算；0 倍率模型也可能触发日限额。冷却仅作用于对应账号的对应模型，到期后自动恢复候选资格。今日请求 / Token 仅统计本网关成功调用，无法据此推算官方剩余额度或客户端消耗。</p>
+      ${d.waf_remaining_seconds > 0 ? `<p class="limit-note">出口 IP 保护已触发，约 ${d.waf_remaining_seconds} 秒后恢复。</p>` : ''}
+      <h4 class="health-title">模型健康 · 近 24 小时</h4>
+      <div class="overflow-x-auto"><table class="tbl health-table"><thead><tr><th>模型</th><th>可选 / 受限账号</th><th>成功 / 请求</th><th>失败率</th><th>首响应 P50 / P95</th><th>总耗时 P95</th><th>最早模型恢复</th></tr></thead><tbody>${healthResult.ok ? (healthResult.data.items || []).map(m => `<tr><td><b>${esc(m.model)}</b>${m.free ? '<small class="health-free">免费</small>' : ''}</td><td>${m.available_accounts} / ${m.limited_accounts}</td><td>${m.successes} / ${m.requests}</td><td>${m.failure_rate == null ? '—' : (m.failure_rate * 100).toFixed(1) + '%'}</td><td>${m.ttfb_ms.p50 == null ? '—' : m.ttfb_ms.p50 + ' ms'} / ${m.ttfb_ms.p95 == null ? '—' : m.ttfb_ms.p95 + ' ms'}</td><td>${m.latency_ms.p95 == null ? '—' : m.latency_ms.p95 + ' ms'}</td><td>${m.earliest_model_recovery ? fmtTime(m.earliest_model_recovery) : '—'}</td></tr>`).join('') || '<tr><td colspan="7" class="account-empty">暂无模型观测</td></tr>' : '<tr><td colspan="7" class="account-empty">健康统计暂时不可用</td></tr>'}</tbody></table></div>
+      <p class="limit-note">延迟取最近最多 2000 条成功记录；账号可选数包含当前进程在途占用和出口保护。最早模型恢复不代表账号整体已可用。</p>
+      <div class="overflow-x-auto"><table class="tbl min-w"><thead><tr><th>账号</th><th>模型</th><th>原因</th><th>预计恢复（北京时间）</th><th>依据</th><th>今日请求 / Token</th><th>操作</th></tr></thead><tbody>${entries.map(e => `<tr><td>${esc(e.account_name)}</td><td>${esc(e.model)}</td><td>${kind[e.kind] || esc(e.kind)}</td><td>${fmtTime(e.until)}</td><td>${source[e.reset_source] || '退避时间'}</td><td>${e.requests_today} / ${e.tokens_today}</td><td><button class="console-btn quiet" onclick="clearModelLimit(${e.account_id},${esc(JSON.stringify(e.model))})">解除冷却</button></td></tr>`).join('') || '<tr><td colspan="7" class="account-empty">当前没有模型冷却记录</td></tr>'}</tbody></table></div>`;
+  } catch(e) {
+    const container = document.getElementById('modelLimitsContent');
+    if (container) container.textContent = '读取失败，请稍后重试';
+  }
+}
+async function clearModelLimit(accountId, model) {
+  if (!await uiConfirm({title:'解除模型冷却',message:'仅清除本地冷却记录，不会重置官方额度；再次触发限额后将重新冷却。',danger:false})) return;
+  const r = await api('/api/accounts/' + accountId + '/model-limits/clear', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model})});
+  if (!r.ok) { toast('解除失败','err'); return; }
+  toast('已解除本地冷却'); loadAccounts(); openModelLimits();
+}
+
 function accRow(a) {
   const soon = Number(a.credits_expiring_soon || 0);
   // 图标操作按钮抽成数组：顺序/配色一处可调，比 9 个 button 平铺更好维护
@@ -1939,14 +2068,14 @@ function accRow(a) {
         <span class="c-uid" title="${esc(a.uid || "")}">${esc(a.uid || "-")}</span>
       </div>
     </td>
-    <td class="col-status" data-label="状态">${badge(a.status)}</td>
+    <td class="col-status" data-label="状态">${badge(a.status)}${accountLimitBadge(a)}</td>
     <td class="tnum text-right" data-label="总积分" style="color:var(--fg-muted)">${a.balance_total}</td>
     <td class="tnum text-right font-medium" data-label="剩余" style="color:${a.balance_remain>0?'var(--ok,#059669)':'var(--danger)'}">
       ${a.balance_remain}${soon > 0 ? `<span class="fs-10-5" style="color:var(--warn)"> (${fmtCredit(soon)})</span>` : ""}
     </td>
-    <td data-label="积分到期">${accExpiryCell(a)}</td>
+    <td data-label="积分到期">${accExpiryCell(a)}${a.credits_collection ? `<small class="billing-state" data-tooltip="账单采集状态" data-tooltip-description="${esc((a.credits_collection.compatibility_fallback ? '兼容接口快照' : a.credits_collection.snapshot_preserved ? '保留上次完整快照' : '三路完整快照') + ' · ' + (a.credits_collection.failed_sources || []).join(' / ') + (a.credits_collection.remaining_difference == null ? '' : ' · 对账差值 ' + a.credits_collection.remaining_difference))}">${a.credits_collection.snapshot_preserved ? '采集不完整' : a.credits_collection.compatibility_fallback ? '兼容快照' : a.credits_collection.remaining_difference ? '账单有差异' : '三路已核对'}</small>` : ''}</td>
     <td class="c-ops" data-label="操作">${ops.map(([fn, ic, col, ttl]) =>
-      `<button onclick="${fn}" class="${col}" title="${ttl}"><i class="fa-solid ${ic}"></i></button>`).join("")}</td>
+      `<button onclick="${fn}" class="${col}" data-tooltip="${ttl}" data-tooltip-description="${esc(accountActionDescription(ttl))}" aria-label="${ttl}">${consoleIcon(ic)}</button>`).join("")}</td>
   </tr>`;
 }
 
@@ -1996,14 +2125,40 @@ async function loadAccounts() {
     dot.title = `${n} 个账号有 7 天内到期的积分`;
   }
 }
+let _accountFilter = "all";
+function closeAccountMenu() {
+  document.getElementById("accountBatchMenu").open = false;
+}
+function setAccountFilter(status) {
+  _accountFilter = status;
+  document.querySelectorAll("[data-account-filter]").forEach(button => {
+    button.setAttribute("aria-pressed", String(button.dataset.accountFilter === status));
+  });
+  renderAccPage(1);
+}
+document.addEventListener("click", event => {
+  const menu = document.getElementById("accountBatchMenu");
+  if (menu && menu.open && !menu.contains(event.target)) closeAccountMenu();
+});
+document.addEventListener("keydown", event => {
+  const menu = document.getElementById("accountBatchMenu");
+  if (event.key === "Escape" && menu && menu.open) {
+    closeAccountMenu();
+    menu.querySelector("summary").focus();
+  }
+});
 function renderAccPage(p) {
   const term = (_accTerm = ($("#accSearch") ? $("#accSearch").value : "").trim().toLowerCase());
-  const data = term ? _accData.filter(a => (a.name||"").toLowerCase().includes(term) || (a.uid||"").toLowerCase().includes(term)) : _accData;
+  const data = _accData.filter(a => (_accountFilter === "all" || a.status === _accountFilter)
+    && (!term || (a.name||"").toLowerCase().includes(term) || (a.uid||"").toLowerCase().includes(term)));
+  $("#filterAllCount").textContent = _accData.length;
+  $("#filterActiveCount").textContent = _accData.filter(a => a.status === "active").length;
+  $("#filterDisabledCount").textContent = _accData.filter(a => a.status === "disabled").length;
   const total = data.length, totalPages = Math.max(1, Math.ceil(total / PS));
   p = Math.min(Math.max(1, p), totalPages);
   const slice = data.slice((p - 1) * PS, p * PS);
   $("#accBody").innerHTML = slice.map(accRow).join("") ||
-    `<tr><td colspan="6" class="px-4 py-8 text-center text-slate-400">${term ? "无匹配的账号" : "还没有账号，点「批量上传」"}</td></tr>`;
+    `<tr><td colspan="6"><div class="account-empty"><strong>${term || _accountFilter !== "all" ? "没有匹配的账号" : "添加第一个账号"}</strong>${term || _accountFilter !== "all" ? "试试其他关键词，或切换账号状态筛选。" : "通过手机号登录，或导入已有账号备份即可开始。"}</div></td></tr>`;
   $("#accPager").innerHTML = pagerHtml(total, p, totalPages, "renderAccPage");
 }
 async function refreshAcc(id){

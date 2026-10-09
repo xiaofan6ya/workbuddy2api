@@ -107,6 +107,22 @@ def _now_utc() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+class RetryBudget:
+    """Bound new attempts across models, without imposing a stream lifetime cap."""
+
+    def __init__(self, attempts: int, window_seconds: float) -> None:
+        self.limit = max(1, attempts)
+        self.window = max(1.0, window_seconds)
+        self.started = time.monotonic()
+        self.used = 0
+
+    def available(self) -> bool:
+        return self.used < self.limit and time.monotonic() - self.started < self.window
+
+    def consume(self) -> None:
+        self.used += 1
+
+
 def _as_utc(dt: datetime | None) -> datetime | None:
     """把可能带时区/不带的 datetime 统一成 naive UTC，便于比较。"""
     if dt is None:

@@ -22,6 +22,7 @@ from admin.security import (
     require_admin,
     verify_password,
 )
+from admin.gateway_limits import GatewayAdmissionMiddleware
 
 logger = logging.getLogger("admin.server")
 
@@ -98,6 +99,9 @@ async def _security_headers(request: Request, call_next):
     if request.url.path.startswith(("/api", "/admin")):
         response.headers.setdefault("Cache-Control", "no-store")
     return response
+
+
+app.add_middleware(GatewayAdmissionMiddleware)
 
 app.include_router(accounts.router)
 app.include_router(keys.router)

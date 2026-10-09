@@ -32,7 +32,7 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
 #: 「快过期」窗口（天）。与参考实现及官方客户端一致 —— 官方在套餐页
@@ -133,6 +133,17 @@ def parse_timestamp_ms(value: Any) -> int | None:
             return parse_timestamp_ms(float(text))
         except ValueError:
             pass
+        # Preserve explicit offsets; unzoned upstream billing clocks are CN time,
+        # not the deployment host's local timezone (Linux servers often use UTC).
+        try:
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if len(text) == 10:
+                dt = dt.replace(hour=23, minute=59, second=59)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone(timedelta(hours=8)))
+            return int(dt.timestamp() * 1000)
+        except ValueError:
+            pass
         for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S",
                     "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
             try:
@@ -141,7 +152,7 @@ def parse_timestamp_ms(value: Any) -> int | None:
                 continue
             if fmt == "%Y-%m-%d":
                 dt = dt.replace(hour=23, minute=59, second=59)
-            return int(dt.timestamp() * 1000)
+            return int(dt.replace(tzinfo=timezone(timedelta(hours=8))).timestamp() * 1000)
         return None
     return None
 
@@ -225,11 +236,11 @@ def _first_number(raw: dict, keys: Iterable[str]) -> float | None:
 #: 与 `CycleCapacityRemainPrecise`（字符串小数，实测 459.49000428）。
 #: 用整数版会让「已用 + 剩余 ≠ 总量」出现 40 + 459 = 499 ≠ 500 的缺口，
 #: 展示和用量核对都会被这个缺口误导，所以优先取 precise。
-_SIZE_KEYS = ("CycleCapacitySizePrecise", "CycleCapacitySize", "CapacitySizePrecise",
+_SIZE_KEYS = ("CycleCapacitySizePrecise", "CycleCapacitySize", "CycleTotalCapacity", "CapacitySizePrecise",
               "CapacitySize", "SlicePeriodCapacitySizePrecise", "SlicePeriodCapacitySize")
-_REMAIN_KEYS = ("CycleCapacityRemainPrecise", "CycleCapacityRemain", "CapacityRemainPrecise",
+_REMAIN_KEYS = ("CycleCapacityRemainPrecise", "CycleCapacityRemain", "CycleRemainCapacity", "CapacityRemainPrecise",
                 "CapacityRemain", "SlicePeriodCapacityRemainPrecise", "SlicePeriodCapacityRemain")
-_USED_KEYS = ("CycleCapacityUsedPrecise", "CycleCapacityUsed", "CapacityUsedPrecise",
+_USED_KEYS = ("CycleCapacityUsedPrecise", "CycleCapacityUsed", "CycleUsedCapacity", "CapacityUsedPrecise",
               "CapacityUsed", "SlicePeriodCapacityUsedPrecise", "SlicePeriodCapacityUsed")
 
 
@@ -250,6 +261,9 @@ def resource_summary(raw: dict, now: int | None = None) -> dict:
     """
     now = now if now is not None else now_ms()
 
+    slices = raw.get("SlicePeriodUsageDetails") or raw.get("slicePeriodUsageDetails") or []
+    if slices and isinstance(slices[0], dict):
+        raw = {**slices[0], **{key: value for key, value in raw.items() if value not in (None, "")}}
     raw_total = _first_number(raw, _SIZE_KEYS)
     raw_remaining = _first_number(raw, _REMAIN_KEYS)
     raw_used = _first_number(raw, _USED_KEYS)

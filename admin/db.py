@@ -178,6 +178,7 @@ def init_db() -> bool:
         _ensure_index("usage_logs", "ix_usage_logs_error_created", ("error_kind", "created_at"))
         _ensure_index("accounts", "ix_accounts_status", ("status",))
         _ensure_index("accounts", "ix_accounts_uid", ("uid",))
+        _ensure_index("account_model_cool", "ix_account_model_cool_model_until", ("model", "until"))
 
         # 迁移：创建 system_settings / schedules 表（create_all 已处理，这里仅兜底）
 

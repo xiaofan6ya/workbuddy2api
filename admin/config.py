@@ -28,6 +28,10 @@ class Settings:
         "mysql+pymysql://root:root@127.0.0.1:3306/workbuddy_admin?charset=utf8mb4",
     )
     REDIS_URL = os.getenv("ADMIN_REDIS_URL", "redis://127.0.0.1:6379/0")
+    # Per-key burst bounds; use 0 explicitly to disable a bound.
+    GATEWAY_RATE_PER_MINUTE = int(os.getenv("ADMIN_GATEWAY_RATE_PER_MINUTE", "60"))
+    GATEWAY_MAX_CONCURRENT = int(os.getenv("ADMIN_GATEWAY_MAX_CONCURRENT", "4"))
+    GATEWAY_LIMIT_BACKEND = os.getenv("ADMIN_GATEWAY_LIMIT_BACKEND", "auto").lower()
 
     # 后端（CodeBuddy / WorkBuddy）
     BACKEND = os.getenv("ADMIN_BACKEND", "https://copilot.tencent.com")
@@ -149,6 +153,9 @@ class Settings:
     #: （6 × 180s = 18 分钟）。它只在「首个账号卡住、后续账号快速失败」时才有净收益。
     #: 想更激进就设 `ADMIN_POOL_MAX_ROTATE`，想保守就设回 3。
     MAX_ROTATE = int(os.getenv("ADMIN_POOL_MAX_ROTATE", "6"))
+    # Shared across all candidate models. Does not interrupt an active stream.
+    MAX_TOTAL_ATTEMPTS = int(os.getenv("ADMIN_POOL_MAX_TOTAL_ATTEMPTS", "6"))
+    RETRY_WINDOW_SECONDS = float(os.getenv("ADMIN_POOL_RETRY_WINDOW", "90"))
     #: 软限流（429）冷却基数（秒）；连续触发按 2 倍指数退避，封顶 SOFT_RATE_MAX。
     SOFT_RATE_SECONDS = int(os.getenv("ADMIN_POOL_SOFT_RATE", "600"))
     #: 软冷却指数退避封顶（秒）。默认 2h，与参考实现一致。
@@ -177,6 +184,7 @@ class Settings:
     SESSION_DEAD_THRESHOLD = int(os.getenv("ADMIN_POOL_SESSION_DEAD_THRESHOLD", "3"))
     #: 模型级限流（code 6004）时的兜底退避（秒），无上游重置时间时使用。
     MODEL_SOFT_RATE_SECONDS = int(os.getenv("ADMIN_POOL_MODEL_SOFT_RATE", "600"))
+    MODEL_DAILY_COOLDOWN_SECONDS = int(os.getenv("ADMIN_POOL_MODEL_DAILY_COOLDOWN", "86400"))
     #: 该后端无此模型（code 11102）的负缓存 TTL（秒）。重试无意义，只能换模型/换号。
     MODEL_BLOCK_SECONDS = int(os.getenv("ADMIN_POOL_MODEL_BLOCK", "21600"))
     #: token 保活定时任务的整点（本地时区）。留空则用默认 [22]。

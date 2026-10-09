@@ -3,18 +3,19 @@ import glob
 import json
 import os
 import shutil
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import time
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 
 from admin import backend, jobrunner, wb_login
 from admin.config import settings
 from admin.db import SessionLocal, get_db
-from admin.models import Account
+from admin.models import Account, AccountModelCooldown, ModelConfig, UsageLog
 from admin.security import require_admin
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
@@ -284,6 +285,18 @@ def _sync_credit_snapshot(acc: Account, packages: list[dict]) -> dict:
     """
     from admin import credits as credit_rules
 
+    collection = getattr(packages, "metadata", None)
+    if collection and not collection["complete"]:
+        try:
+            previous = json.loads(acc.credits_snapshot or "{}")
+        except (ValueError, TypeError):
+            previous = {}
+        if not isinstance(previous, dict):
+            previous = {}
+        previous = {**credit_rules.summarize_account(previous.get("resources") or []), **previous}
+        previous["collection"] = {**collection, "snapshot_preserved": True}
+        acc.credits_snapshot = json.dumps(previous, ensure_ascii=False)
+        return previous
     now = credit_rules.now_ms()
     normalized = credit_rules.normalize_packages(packages, now)
     summary = credit_rules.summarize_account(normalized, now)
@@ -296,7 +309,7 @@ def _sync_credit_snapshot(acc: Account, packages: list[dict]) -> dict:
     acc.credits_expired = int(summary["expired_remaining"])
     acc.credits_soonest_expire_at = credit_rules.as_datetime(summary["soonest_expire_at"])
     acc.credits_snapshot = json.dumps(
-        {**summary,
+        {**summary, "collection": collection,
          "resources": [{k: v for k, v in r.items()} for r in normalized]},
         ensure_ascii=False)
     acc.credits_synced_at = datetime.utcnow()
@@ -382,6 +395,7 @@ def _credit_fields(a: Account) -> dict:
         "credits_soonest_expire_at": soonest_ms,
         "credits_soonest_days_left": snap.get("soonest_days_left"),
         "credits_synced_at": a.credits_synced_at.isoformat() if a.credits_synced_at else None,
+        "credits_collection": snap.get("collection"),
         "credits_package_count": int(snap.get("package_count") or 0),
         "credits_active_package_count": int(snap.get("active_package_count") or 0),
         # 「最近快到期的积分包」：明细已按到期升序，取前 3 个供列表行直接渲染。
@@ -394,6 +408,8 @@ def _credit_fields(a: Account) -> dict:
 @router.get("")
 def list_accounts(_: bool = Depends(require_admin), db: Session = Depends(get_db)):
     rows = db.query(Account).order_by(Account.id.desc()).all()
+    now = datetime.utcnow()
+    limits = _active_model_limits(db, now)
     items = [
         {
             "id": a.id,
@@ -407,6 +423,8 @@ def list_accounts(_: bool = Depends(require_admin), db: Session = Depends(get_db
             "last_sync_at": a.last_sync_at.isoformat() if a.last_sync_at else None,
             "last_used_at": a.last_used_at.isoformat() if a.last_used_at else None,
             "created_at": a.created_at.isoformat() if a.created_at else None,
+            "model_limits": limits.get(a.id, []),
+            **_gateway_fields(a, now),
             **_credit_fields(a),
         }
         for a in rows
@@ -448,6 +466,88 @@ def list_accounts(_: bool = Depends(require_admin), db: Session = Depends(get_db
             i["credits_expiring_soon"] for i in disabled_items),
     }
     return {"items": items, "summary": summary}
+
+
+def _gateway_fields(a: Account, now: datetime) -> dict:
+    until = max((t for t in (a.cool_until, a.breaker_until, a.degrade_until)
+                 if t and t > now), default=None)
+    return {
+        "gateway_state": "disabled" if a.status != "active" else "cooling" if until else "ready",
+        "gateway_until": until.isoformat() + "Z" if until else None,
+        "gateway_reason": a.cool_kind or "breaker" if until else "",
+    }
+
+
+def _active_model_limits(db: Session, now: datetime) -> dict:
+    result = {}
+    for row in db.query(AccountModelCooldown).filter(AccountModelCooldown.until > now).all():
+        # Old daily entries may have been stored as model_rate; report accurately.
+        from admin.routers.proxy import _json_code, _MODEL_RATE_CODES
+        daily = row.kind == "model_daily" or _json_code(row.reason or "") in _MODEL_RATE_CODES
+        result.setdefault(row.account_id, []).append({
+            "model": row.model,
+            "kind": "model_daily" if daily else row.kind,
+            "until": row.until.isoformat() + "Z",
+            "remaining_seconds": max(0, int((row.until - now).total_seconds())),
+            "reset_source": "estimated" if (row.reason or "").startswith("[estimated]") else "upstream" if daily and row.kind == "model_daily" else "backoff",
+            "hits": row.hits or 0,
+        })
+    return result
+
+
+@router.get("/model-limits")
+def model_limits(_: bool = Depends(require_admin), db: Session = Depends(get_db)):
+    """Observed account/model limits + gateway usage; no upstream polling."""
+    now = datetime.utcnow()
+    rows = db.query(Account).all()
+    limits = _active_model_limits(db, now)
+    start = (now + timedelta(hours=8)).replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(hours=8)
+    usage = {(account_id, model): {"requests_today": count, "tokens_today": int(tokens or 0)}
+             for account_id, model, count, tokens in db.query(
+                 UsageLog.account_id, UsageLog.model, func.count(UsageLog.id), func.sum(UsageLog.total_tokens))
+             .filter(UsageLog.created_at >= start, UsageLog.error_kind == "success")
+             .group_by(UsageLog.account_id, UsageLog.model).all()}
+    items = []
+    for account in rows:
+        for entry in limits.get(account.id, []):
+            items.append({**entry, "account_id": account.id,
+                          "account_name": account.name or account.uid,
+                          "account_status": account.status,
+                          **usage.get((account.id, entry["model"]), {"requests_today": 0, "tokens_today": 0})})
+    from admin.pool import POOL
+    summary = []
+    configs = {c.model_id: c for c in db.query(ModelConfig).filter(ModelConfig.enabled == 1, ModelConfig.level == "system").all()}
+    for model in sorted(set(configs) | {e["model"] for e in items}):
+        config = configs.get(model)
+        free = config is not None and config.credit_multiplier == 0
+        blocked = {e["account_id"] for e in items if e["model"] == model}
+        available = [a for a in rows if a.status == "active" and a.id not in blocked
+                     and _gateway_fields(a, now)["gateway_state"] == "ready"
+                     and (free or (a.balance_remain or 0) > 0)
+                     and not POOL.inflight.full(a.uid or "", settings.MAX_IN_FLIGHT)]
+        summary.append({"model": model, "free": free,
+                        "available_accounts": len(available), "limited_accounts": len(blocked),
+                        "requests_today": sum(v["requests_today"] for (_, m), v in usage.items() if m == model),
+                        "tokens_today": sum(v["tokens_today"] for (_, m), v in usage.items() if m == model)})
+    return {"items": items, "models": summary, "observed_at": now.isoformat() + "Z",
+            "waf_remaining_seconds": POOL.waf.remaining(),
+            "usage_scope": "gateway_only", "daily_quota_total": None}
+
+
+class ClearModelLimit(BaseModel):
+    model: str
+
+
+@router.post("/{acc_id}/model-limits/clear")
+def clear_model_limit(acc_id: int, body: ClearModelLimit,
+                      _: bool = Depends(require_admin), db: Session = Depends(get_db)):
+    if not db.query(Account).filter(Account.id == acc_id).first():
+        raise HTTPException(status_code=404, detail="账号不存在")
+    count = db.query(AccountModelCooldown).filter(
+        AccountModelCooldown.account_id == acc_id,
+        AccountModelCooldown.model == body.model).delete(synchronize_session=False)
+    db.commit()
+    return {"ok": True, "cleared": count}
 
 
 @router.post("")
@@ -826,6 +926,12 @@ def credit_details(acc_id: int, refresh: bool = False,
             db.commit()
             packages = _cached()
             source = "live"
+            collection = getattr(raw_packages, "metadata", None)
+            if collection and not collection["complete"]:
+                source = "cache" if packages else "none"
+                error = "账单来源不完整，保留上次完整快照"
+                if not packages:
+                    raise HTTPException(status_code=502, detail=error)
         except Exception as e:
             error = str(e)
             packages = _cached()   # 上游失败也要能把上次的快照给出去
@@ -841,11 +947,17 @@ def credit_details(acc_id: int, refresh: bool = False,
     # 前者已排好序（且已排除没有剩余额度的包），后者是上游给出的顺序
     # （实测按创建时间，与到期时间无关，直接展示会出现「10/31 排在 10/12 前面」）。
     ordered = summary["resources"]
+    try:
+        snapshot_meta = json.loads(acc.credits_snapshot or "{}")
+        collection_meta = snapshot_meta.get("collection") if isinstance(snapshot_meta, dict) else None
+    except (ValueError, TypeError):
+        collection_meta = None
     return {
         "id": acc_id,
         "account": acc.name,
         "source": source,                       # live | cache
         "error": error or None,
+        "collection": collection_meta,
         # 旧字段保留：`packages` 维持升级前的扁平结构
         # （`name` / `total` / `remain` / `used` / `deduction_end` …）。
         # 把它改成新结构会让既有脚本与页面静默显示空白 —— 兼容成本极低，
@@ -975,6 +1087,13 @@ def sync_credits(_: bool = Depends(require_admin), db: Session = Depends(get_db)
                 packages = sess.fetch_credit_details()
                 a.auth_json = sess.updated_json()
             summary = _sync_credit_snapshot(a, packages)
+            collection = getattr(packages, "metadata", None)
+            if collection and not collection["complete"]:
+                failed += 1
+                detail.append({"id": a.id, "account": a.name, "ok": False,
+                               "error": "账单来源不完整，保留旧快照", "collection": collection})
+                db.commit()
+                continue
             ok += 1
             detail.append({
                 "id": a.id, "account": a.name, "ok": True,
@@ -1232,6 +1351,7 @@ def delete_account(acc_id: int, _: bool = Depends(require_admin), db: Session = 
     acc = db.query(Account).filter(Account.id == acc_id).first()
     if not acc:
         raise HTTPException(status_code=404, detail="账号不存在")
+    db.query(AccountModelCooldown).filter(AccountModelCooldown.account_id == acc_id).delete(synchronize_session=False)
     db.delete(acc)
     db.commit()
     return {"id": acc_id, "ok": True}

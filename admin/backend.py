@@ -264,6 +264,9 @@ class AccountSession:
     def fetch_credit_details(self) -> list[dict]:
         """获取积分明细（每个积分包的总量/剩余/到期时间）。
 
+        通过 summary/paid/free 独立采集与旧接口兼容回退，返回的 list
+        附带 metadata。来源不完整时由快照写入层保留上次完整结果。
+
         对应截图中的「版本基础用量」「权益赠送包」等条目。
 
         **原样返回上游字段**，不做改名、不做取值决策：
@@ -271,7 +274,7 @@ class AccountSession:
         `CycleCapacityRemain`（整数）两套字段表达同一语义，
         到底该信哪个、`DeductionEndTime`（可能是 2034/2049 的占位值）
         与 `CycleEndTime` 谁是真实到期时间 —— 这些口径判断全部收拢在
-        `admin/credits.py::resource_summary`，本方法只负责「把数据取回来」。
+            `admin/credits.py::resource_summary`，本方法只负责「把数据取回来」。
 
         为什么必须这样分层：这里一旦把字段改名成 `remain`/`deduction_end`，
         口径判断就被锁死在取值现场了 —— 而 2034 占位值这个问题正是
@@ -279,14 +282,8 @@ class AccountSession:
         改名，导致 `admin/credits.py` 按上游原名读取时**一个字段都匹配不上**，
         所有包都被判成「无到期时间 / 剩余 0」，调度依据静默失效。
         """
-        data = self.cm._request_backend("POST", "/v2/billing/meter/get-user-resource", {})
-        resp = data.get("data", {}).get("Response", {}).get("Data", {}) or {}
-        packages = []
-        for a in resp.get("Accounts") or []:
-            if a.get("CapacityUnit") != "credits":
-                continue
-            packages.append(a)
-        return packages
+        from admin.billing import collect_billing
+        return collect_billing(self.cm._request_backend)
 
     def fetch_request_usage(self, start_time: str, end_time: str, page_num: int = 1, page_size: int = 10) -> dict:
         """获取模型请求用量（对接 WorkBuddy 已有接口，不自建日志）。"""
