@@ -21,11 +21,95 @@ def _safe_ident(name: str) -> str:
 
 
 def _quote_db_name(name: str) -> str:
-    """库名（来自配置）去除反引号转义后安全引用。"""
-    return name.replace("`", "").replace("\\", "").strip()
+    """库名（来自配置）去除引号/转义字符后安全引用。
+
+    MySQL 与 PostgreSQL 的标识符引用符不同（反引号 vs 双引号），所以两种都要
+    剔掉 —— 这个函数同时服务 `CREATE DATABASE` 的 MySQL 与 PostgreSQL 分支。
+    """
+    return (name.replace("`", "").replace('"', "")
+            .replace("\\", "").strip())
+
 
 engine = create_engine(settings.DATABASE_URL, pool_pre_ping=True, pool_recycle=3600,
                         pool_timeout=30, pool_size=20, max_overflow=40, future=True)
+
+
+# ---------------------------------------------------------------------------
+# 方言适配
+# ---------------------------------------------------------------------------
+#: 当前方言：mysql / postgresql / sqlite。启动期只读一次，进程内不会变。
+_DIALECT_NAME = engine.dialect.name
+
+#: 迁移列的类型别名。`_ensure_column` 的调用点一律按 MySQL 惯用名书写，
+#: 这里映射到目标方言的真实类型名：
+#:   * PostgreSQL 没有 `DATETIME`（应为 `TIMESTAMP`）、没有 `INT`（应为 `INTEGER`）；
+#:   * PostgreSQL 的 `FLOAT` 是单精度，而迁移列存的是倍率/积分比例，
+#:     用 `DOUBLE PRECISION` 才不丢精度（两个方言的 FLOAT 语义本就不同）。
+_TYPE_ALIASES = {
+    "postgresql": {"DATETIME": "TIMESTAMP", "INT": "INTEGER", "FLOAT": "DOUBLE PRECISION"},
+}
+
+#: 走 SQL 标准双引号引用的方言。MySQL 默认只认反引号（未开 ANSI_QUOTES 时
+#: 双引号会被当作字符串字面量，转义直接失效），所以必须区别对待。
+_DOUBLE_QUOTE_DIALECTS = ("postgresql", "sqlite")
+
+#: 支持 `CREATE INDEX IF NOT EXISTS` 的方言（MySQL 不支持该语法）。
+_INDEX_IF_NOT_EXISTS_DIALECTS = ("postgresql", "sqlite")
+
+
+def _ident_quote() -> str:
+    """当前方言的标识符引用符。
+
+    做成函数而不是模块常量：引用符必须与 `_DIALECT_NAME` 保持一致，两个独立
+    常量容易改一个忘一个；收敛成单一来源后，测试也可以只 patch `_DIALECT_NAME`。
+    """
+    return '"' if _DIALECT_NAME in _DOUBLE_QUOTE_DIALECTS else "`"
+
+
+def quote_ident(name: str) -> str:
+    """按当前方言引用一个标识符。
+
+    名字先过 `_safe_ident` 白名单（仅字母数字下划线），因此这里的内插
+    **不构成注入面** —— 这也是调用点能安全拼接 SQL 的前提。
+    """
+    q = _ident_quote()
+    return f"{q}{_safe_ident(name)}{q}"
+
+
+def column_type(col_type: str) -> str:
+    """把 MySQL 惯用的类型名改写为当前方言可执行的类型名。
+
+    带长度的类型（如 `VARCHAR(64)`）保留长度透传，只替换类型名部分。
+    """
+    aliases = _TYPE_ALIASES.get(_DIALECT_NAME) or {}
+    head, sep, rest = col_type.partition("(")
+    return aliases.get(head.strip().upper(), head.strip()) + (sep + rest if sep else "")
+
+
+def add_column_ddl(table: str, col: str, col_type: str, default: str = "") -> str:
+    """生成 `ALTER TABLE ... ADD COLUMN` DDL（按当前方言引用与类型映射）。
+
+    抽成纯函数是为了让「方言适配是否正确」可以被单元测试直接断言，
+    不必起一个真实的 PostgreSQL 实例。
+    """
+    return (f"ALTER TABLE {quote_ident(table)} "
+            f"ADD COLUMN {quote_ident(col)} {column_type(col_type)} {default}".rstrip())
+
+
+def create_index_ddl(table: str, index: str, columns: tuple[str, ...]) -> str:
+    """生成 `CREATE INDEX` DDL（按当前方言引用标识符）。
+
+    PostgreSQL / SQLite 追加 `IF NOT EXISTS`：多 worker 同时启动时都会走到
+    建索引这一步，靠数据库自身把并发竞态收敛掉（建索引失败在 MySQL 分支上
+    只会打一条 warning，索引其实没建成，很难被发现）。
+    MySQL **不支持**该语法，只能依赖调用方的存在性检查。
+    """
+    cols = ", ".join(quote_ident(c) for c in columns)
+    clause = "IF NOT EXISTS " if _DIALECT_NAME in _INDEX_IF_NOT_EXISTS_DIALECTS else ""
+    return (f"CREATE INDEX {clause}{quote_ident(index)} "
+            f"ON {quote_ident(table)} ({cols})")
+
+
 if engine.dialect.name == "sqlite":
     @event.listens_for(engine, "connect")
     def _sqlite_pragmas(connection, _record):
@@ -45,8 +129,14 @@ def get_db():
 
 
 def ensure_database():
-    """若 DATABASE_URL 指向的库不存在则创建（仅 MySQL）。"""
+    """若 DATABASE_URL 指向的库不存在则创建（MySQL / PostgreSQL）。
+
+    SQLite 不需要这一步（文件即库，连接时自动建），直接返回。
+    """
     url = settings.DATABASE_URL
+    if url.startswith("postgres"):
+        _ensure_pg_database(url)
+        return
     if not url.startswith("mysql"):
         return
     db_name = url.split("/")[-1].split("?")[0]
@@ -63,6 +153,43 @@ def ensure_database():
         with conn.cursor() as cur:
             cur.execute(f"CREATE DATABASE IF NOT EXISTS `{_quote_db_name(db_name)}` CHARACTER SET utf8mb4")
         conn.commit()
+    finally:
+        conn.close()
+
+
+def _ensure_pg_database(url: str) -> None:
+    """连到 `postgres` 维护库并 `CREATE DATABASE`（目标库不存在时）。
+
+    为什么必须绕一层维护库：PostgreSQL **不允许在事务块内创建数据库**，而目标
+    库不存在时又压根连不上去。所以先连 `postgres`（安装时必有的默认库），
+    再判存在 + 创建。psycopg3 的 `autocommit=True` 天然满足「不在事务里」这个前提。
+
+    连接串直接由 SQLAlchemy 的 URL 渲染，而不是手工拆 host/user/password：
+    后者会在密码含 `@` `:` `/` 等字符（URL 编码形式）或 IPv6 主机时解析错。
+
+    失败不抛：与 MySQL 分支一样，最终由 `_retry_db_startup` 包住并降级启动 ——
+    权限不足（如托管 PG 不给建库权）时，用户自行建好库即可，不该让服务起不来。
+    """
+    from sqlalchemy.engine.url import make_url
+
+    u = make_url(url)
+    db_name = (u.database or "").strip()
+    if not db_name:
+        return
+    # 去掉 `+psycopg` 驱动后缀：psycopg 只认 libpq 风格的 `postgresql://`。
+    # 维护库固定为 `postgres`，其余部分（host/port/凭据）沿用原 URL。
+    conninfo = u.set(drivername="postgresql", database="postgres").render_as_string(
+        hide_password=False
+    )
+    import psycopg
+
+    conn = psycopg.connect(conninfo, autocommit=True, connect_timeout=8)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (db_name,))
+            if cur.fetchone() is None:
+                cur.execute(f'CREATE DATABASE "{_quote_db_name(db_name)}"')
+                logger.info("已创建 PostgreSQL 数据库 %s", db_name)
     finally:
         conn.close()
 
@@ -204,35 +331,24 @@ def wait_database_ready() -> bool:
 
 
 def _ensure_column(table: str, col: str, col_type: str, default: str = ""):
-    """检查并添加缺失的列（MySQL 兼容）。表名/列名经白名单校验；其余参数走绑定。"""
+    """检查并添加缺失的列（MySQL / PostgreSQL / SQLite 通用）。
+
+    为什么改用 SQLAlchemy 的 `inspect()` 反射、而不是查 `INFORMATION_SCHEMA`：
+    MySQL 与 PostgreSQL 的 information_schema 口径并不通用 ——
+      * 库名谓词：MySQL 是 `DATABASE()`，PostgreSQL 是 `current_database()`；
+      * PostgreSQL 根本没有 `INFORMATION_SCHEMA.STATISTICS`（索引信息在 `pg_indexes`）。
+    逐方言写分支既啰嗦又容易漏，而反射接口由 SQLAlchemy 负责抹平，且 SQLite
+    分支本来就是这么写的 —— 统一之后只有一份逻辑。
+
+    表名/列名经白名单校验后引用；`col_type`/`default` 是调用点写死的常量，非外部输入。
+    """
     try:
-        if engine.dialect.name == "sqlite":
-            exists = any(c["name"] == col for c in inspect(engine).get_columns(table))
-            if not exists:
-                with engine.begin() as conn:
-                    conn.execute(text(f'ALTER TABLE "{_safe_ident(table)}" '
-                                      f'ADD COLUMN "{_safe_ident(col)}" {col_type} {default}'))
+        if any(c["name"] == col for c in inspect(engine).get_columns(table)):
             return
-        with engine.connect() as conn:
-            result = conn.execute(
-                text(
-                    "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS "
-                    "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=:tbl AND COLUMN_NAME=:col"
-                ),
-                {"tbl": table, "col": col},
-            )
-            exists = result.scalar() or 0
-            if not exists:
-                # 表名/列名为编译期常量，经白名单校验后安全内插；col_type/default 亦为常量
-                conn.execute(
-                    text(
-                        f"ALTER TABLE `{_safe_ident(table)}` "
-                        f"ADD COLUMN `{_safe_ident(col)}` {col_type} {default}"
-                    )
-                )
-                conn.commit()
+        with engine.begin() as conn:
+            conn.execute(text(add_column_ddl(table, col, col_type, default)))
     except Exception:
-        pass  # 非 MySQL 或权限不足时静默跳过
+        pass  # 表不存在 / 权限不足 / 方言不支持时静默跳过，不影响启动
 
 
 def _ensure_index(table: str, index: str, columns: tuple[str, ...]) -> bool:
@@ -240,38 +356,24 @@ def _ensure_index(table: str, index: str, columns: tuple[str, ...]) -> bool:
 
     为什么必须显式建：`Base.metadata.create_all()` 对**已存在**的表不做任何事，
     所以老库上新加的索引永远不会生效 —— 这正是「按账号查询使用记录很慢」
-    在升级后依然慢的原因。这里走 INFORMATION_SCHEMA 判断后 `CREATE INDEX`。
+    在升级后依然慢的原因。
 
-    索引名与列名都经 `_safe_ident` 白名单校验（只允许字母数字下划线），
-    杜绝拼接注入；无法执行的方言（如 SQLite）静默跳过，不影响启动。
+    存在性判断与 `_ensure_column` 同因：改用 `inspect()` 反射，避免
+    MySQL 的 `INFORMATION_SCHEMA.STATISTICS` + `DATABASE()` 在 PostgreSQL 上
+    无法执行（PG 的索引信息不在 information_schema 里）。
+
+    索引名与列名都经白名单校验后引用，杜绝拼接注入；
+    执行失败的方言（权限不足 / 并发建索引冲突）只告警，不影响启动。
     """
     if not columns:
         return False
     try:
-        if engine.dialect.name == "sqlite":
-            with engine.begin() as conn:
-                cols = ", ".join(f'"{_safe_ident(c)}"' for c in columns)
-                conn.execute(text(f'CREATE INDEX IF NOT EXISTS "{_safe_ident(index)}" '
-                                  f'ON "{_safe_ident(table)}" ({cols})'))
-            return True
-        with engine.connect() as conn:
-            exists = conn.execute(
-                text(
-                    "SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS "
-                    "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=:tbl AND INDEX_NAME=:idx"
-                ),
-                {"tbl": table, "idx": index},
-            ).scalar() or 0
-            if exists:
-                return False
-            cols = ", ".join(f"`{_safe_ident(c)}`" for c in columns)
-            conn.execute(
-                text(f"CREATE INDEX `{_safe_ident(index)}` "
-                     f"ON `{_safe_ident(table)}` ({cols})")
-            )
-            conn.commit()
-            logger.info("已创建索引 %s(%s)", index, ",".join(columns))
-            return True
+        if any(i["name"] == index for i in inspect(engine).get_indexes(table)):
+            return False
+        with engine.begin() as conn:
+            conn.execute(text(create_index_ddl(table, index, columns)))
+        logger.info("已创建索引 %s(%s)", index, ",".join(columns))
+        return True
     except Exception as e:
         # 权限不足 / 方言不支持 / 并发建索引冲突：都不该让服务启动失败
         logger.warning("创建索引 %s 失败（不影响启动）：%s", index, e)

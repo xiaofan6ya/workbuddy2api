@@ -840,7 +840,8 @@ xx 个账号最坏能占住调度线程一个多小时，期间整点刷新 / �
 |------|------|------|
 | Python | 运行 converter / admin | 3.10+（推荐 3.12） |
 | Node.js | 设备风控头 `turing_helper.js`（require 桌面端 SDK） | 任意 LTS |
-| MySQL | admin 账号池 / 用量库 | 8.x，默认 `root/root`，库名 `workbuddy_admin` |
+| MySQL | admin 账号池 / 用量库（默认） | 8.x，默认 `root/root`，库名 `workbuddy_admin` |
+| PostgreSQL | admin 账号池 / 用量库（可选替代 MySQL） | 12+，驱动 `psycopg`，库名 `workbuddy_admin` |
 | Redis | admin Key / 配额缓存 | 默认 6379 |
 | WorkBuddy 桌面端 | 提供登录态 `.info` 与 Turing SDK | 已登录 |
 
@@ -857,6 +858,11 @@ python3 -m venv .venv && source .venv/bin/activate && pip install -r requirement
 ```
 
 `requirements.txt`：`fastapi` · `uvicorn[standard]` · `httpx` · `sqlalchemy>=2.0` · `pymysql` · `redis` · `python-multipart` · `PyJWT` · `cryptography`
+
+> **数据库驱动按方言择一**：MySQL 用 `pymysql`（默认启用），PostgreSQL 需额外安装
+> `pip install "psycopg[binary]"`；SQLite 走标准库，无需第三方驱动（安卓版内置使用）。
+> 配好 `ADMIN_DATABASE_URL` 后，迁移列与查询索引会在首次启动时按当前方言自动补齐，
+> 切换数据库后端不需要额外手工建表。
 
 ### 4.3 运行方式（三种）
 

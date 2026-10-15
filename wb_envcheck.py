@@ -82,10 +82,17 @@ REQUIRED_MODULES = (
     ("uvicorn", "uvicorn"),
     ("httpx", "httpx"),
     ("sqlalchemy", "SQLAlchemy"),
-    ("pymysql", "PyMySQL"),
     ("dotenv", "python-dotenv"),
     ("jwt", "PyJWT"),
     ("redis", "redis"),
+)
+#: 数据库驱动：按 ADMIN_DATABASE_URL 的方言**择一**即可，所以不放进
+#: REQUIRED_MODULES（那是个「全部必须」的列表）。MySQL → PyMySQL，
+#: PostgreSQL → psycopg；SQLite 走标准库，无需第三方驱动。
+DB_DRIVER_MODULES = (
+    ("pymysql", "PyMySQL", "mysql"),
+    ("psycopg", "psycopg", "postgres"),
+    ("psycopg2", "psycopg2-binary", "postgres"),
 )
 #: 可选：缺了只是个别功能降级
 #: 注意：**不含 passlib/bcrypt** —— 本项目密码哈希用标准库
@@ -96,6 +103,19 @@ OPTIONAL_MODULES = (
     ("multipart", "python-multipart"),       # 表单上传
     ("pydantic", "pydantic"),
 )
+
+
+def _db_dialect_of(url: str) -> str:
+    """从 ADMIN_DATABASE_URL 粗判方言：mysql / postgres / sqlite / 空串。"""
+    u = (url or "").strip().lower()
+    if u.startswith("mysql"):
+        return "mysql"
+    if u.startswith("postgres"):
+        return "postgres"
+    if u.startswith("sqlite"):
+        return "sqlite"
+    return ""
+
 
 
 def check_python() -> list[Item]:
@@ -124,6 +144,29 @@ def check_modules() -> list[Item]:
             _OK if ok else _FAIL,
             "已安装" if ok else "未安装",
             "" if ok else f"pip install {pkg}"))
+    # 数据库驱动：只在「当前配置的方言」对应的驱动缺失时才算失败。
+    # 例如配 PostgreSQL 而只装了 PyMySQL —— 那才是真缺；反过来同理。
+    dialect = _db_dialect_of(os.getenv("ADMIN_DATABASE_URL", "")
+                             or _configured_db_url())
+    for mod, pkg, dialect_of in DB_DRIVER_MODULES:
+        installed = importlib.util.find_spec(mod) is not None
+        # 同一方言有多个驱动候选（psycopg / psycopg2），命中一个就算齐
+        sibling_ok = any(importlib.util.find_spec(m) is not None
+                         for m, _p, d in DB_DRIVER_MODULES
+                         if d == dialect_of and m != mod)
+        relevant = (dialect == dialect_of)
+        if relevant and not (installed or sibling_ok):
+            items.append(Item(
+                f"py.{mod}", f"数据库驱动 {pkg}", LEVEL_REQUIRED, _FAIL, "未安装",
+                f"当前 ADMIN_DATABASE_URL 是 {dialect}，请 pip install {pkg}"))
+        elif installed:
+            items.append(Item(
+                f"py.{mod}", f"数据库驱动 {pkg}", LEVEL_OPTIONAL, _OK, "已安装"))
+        else:
+            # 与当前方言无关的驱动：不提示安装，避免误导
+            items.append(Item(
+                f"py.{mod}", f"数据库驱动 {pkg}", LEVEL_OPTIONAL, _OK,
+                f"未安装（当前方言 {dialect or '未配置'} 不需要）"))
     for mod, pkg in OPTIONAL_MODULES:
         ok = importlib.util.find_spec(mod) is not None
         items.append(Item(
@@ -132,6 +175,16 @@ def check_modules() -> list[Item]:
             "已安装" if ok else "未安装（相关功能降级）",
             "" if ok else f"pip install {pkg}"))
     return items
+
+
+def _configured_db_url() -> str:
+    """从 admin.config 读 DATABASE_URL；读不到返回空串（未安装依赖时也会走到）。"""
+    try:
+        from admin.config import settings  # type: ignore
+        return settings.DATABASE_URL or ""
+    except Exception:
+        return ""
+
 
 
 # ---------------------------------------------------------------------------
@@ -305,7 +358,8 @@ def _tcp_ok(host: str, port: int, timeout: float = 2.0) -> bool:
 
 
 def _parse_hostport(url: str, default_port: int):
-    """从 `mysql+pymysql://u:p@h:3306/db` 这类 URL 里取 host/port。"""
+    """从 `mysql+pymysql://u:p@h:3306/db` / `postgresql+psycopg://u:p@h:5432/db`
+    这类 URL 里取 host/port；没写端口时用 default_port。"""
     try:
         tail = url.split("://", 1)[-1]
         tail = tail.split("@", 1)[-1] if "@" in tail else tail
@@ -330,14 +384,27 @@ def check_services() -> list[Item]:
         pass
 
     if db_url:
-        h, p = _parse_hostport(db_url, 3306)
-        ok = _tcp_ok(h, p)
-        items.append(Item("svc.mysql", f"MySQL ({h}:{p})", LEVEL_REQUIRED,
-                          _OK if ok else _FAIL,
-                          "可连接" if ok else "连不上",
-                          "" if ok else "检查服务是否启动、端口/账号是否正确"))
+        # 库名与默认端口按方言选：MySQL 3306 / PostgreSQL 5432。
+        # 原来一律写死 "MySQL" + 3306，配 PG 时会把 5432 的实例当成 MySQL 报错。
+        dialect = _db_dialect_of(db_url)
+        label = {"mysql": "MySQL", "postgres": "PostgreSQL",
+                 "sqlite": "SQLite"}.get(dialect, "数据库")
+        default_port = 5432 if dialect == "postgres" else 3306
+        if dialect == "sqlite":
+            path = db_url.split("///", 1)[-1]
+            ok = bool(path) and os.path.exists(path)
+            items.append(Item("svc.db", f"SQLite ({path})", LEVEL_REQUIRED,
+                              _OK if ok else _WARN,
+                              "文件已存在" if ok else "文件尚未创建（首次启动会自动建）"))
+        else:
+            h, p = _parse_hostport(db_url, default_port)
+            ok = _tcp_ok(h, p)
+            items.append(Item("svc.db", f"{label} ({h}:{p})", LEVEL_REQUIRED,
+                              _OK if ok else _FAIL,
+                              "可连接" if ok else "连不上",
+                              "" if ok else "检查服务是否启动、端口/账号是否正确"))
     else:
-        items.append(Item("svc.mysql", "MySQL", LEVEL_REQUIRED, _WARN,
+        items.append(Item("svc.db", "数据库", LEVEL_REQUIRED, _WARN,
                           "未配置 ADMIN_DATABASE_URL"))
 
     if redis_url:
