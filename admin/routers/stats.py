@@ -148,9 +148,19 @@ def usage_stats(
     key_names = {k.id: k.name for k in db.query(ApiKey).all()}
 
     # ── 趋势（按天/按小时分桶）──────────────────────────────────────────
-    if db.get_bind().dialect.name == "sqlite":
+    # 时间截断函数三个方言各不相同，且没有 SQLAlchemy 通用表达式可用：
+    #   SQLite     → strftime('%Y-%m-%d %H:00', ts)
+    #   PostgreSQL → to_char(ts, 'YYYY-MM-DD HH24:00')   （没有 date_format()）
+    #   MySQL      → date_format(ts, '%Y-%m-%d %H:00')
+    # 三者的输出**必须逐字一致**（都是 'YYYY-MM-DD HH:00'），否则前端把趋势
+    # 按字符串分组时会裂成两套键。改这里请同步核对另两个分支的格式串。
+    _dialect = db.get_bind().dialect.name
+    if _dialect == "sqlite":
         bucket = func.strftime("%Y-%m-%d %H:00" if granularity == "hour" else "%Y-%m-%d",
                                UsageLog.created_at)
+    elif _dialect == "postgresql":
+        bucket = func.to_char(UsageLog.created_at,
+                              "YYYY-MM-DD HH24:00" if granularity == "hour" else "YYYY-MM-DD")
     elif granularity == "hour":
         bucket = func.date_format(UsageLog.created_at, "%Y-%m-%d %H:00")
     else:

@@ -178,7 +178,54 @@ def _pump(stream, log_path: Path, tag: str) -> None:
 
 
 # 运行后台所需的核心依赖；当前解释器缺任一即尝试切换到带依赖的虚拟环境。
-_REQUIRED_DEPS = ["pymysql", "uvicorn", "fastapi", "redis", "sqlalchemy"]
+# 注意：**数据库驱动不在其中** —— MySQL 用 pymysql、PostgreSQL 用 psycopg，
+# 两者择一即可（由 ADMIN_DATABASE_URL 的方言决定），强制要求同时装会把
+# 只跑单一方言的部署逼着装一堆用不上的驱动。
+_REQUIRED_DEPS = ["uvicorn", "fastapi", "redis", "sqlalchemy"]
+
+#: 数据库驱动候选：命中任意一个即视为满足。
+_DB_DRIVER_MODULES = ("pymysql", "psycopg", "psycopg2")
+
+
+def _dep_check_script() -> str:
+    """给子解释器用的依赖校验脚本（与 `_missing_deps` 判定口径一致）。
+
+    为什么用子进程跑脚本而不是 `import a, b`：`import A, B` 是「全部必须成功」，
+    而数据库驱动要的是「任一成功」。用脚本表达这个 or 语义最直白。
+    """
+    return (
+        "import importlib, sys\n"
+        f"core = {_REQUIRED_DEPS!r}\n"
+        f"drivers = {list(_DB_DRIVER_MODULES)!r}\n"
+        "def ok(name):\n"
+        "    try:\n"
+        "        importlib.import_module(name)\n"
+        "        return True\n"
+        "    except Exception:\n"
+        "        return False\n"
+        "bad = [m for m in core if not ok(m)]\n"
+        "if not any(ok(d) for d in drivers):\n"
+        "    bad.append('pymysql|psycopg')\n"
+        "sys.exit(1 if bad else 0)\n"
+    )
+
+
+def _module_ok(name: str) -> bool:
+    """当前解释器能否 import 该模块。"""
+    import importlib
+    try:
+        importlib.import_module(name)
+        return True
+    except Exception:
+        return False
+
+
+def _missing_deps() -> list[str]:
+    """当前解释器缺失的依赖名（数据库驱动只需命中一个）。空列表表示齐备。"""
+    missing = [m for m in _REQUIRED_DEPS if not _module_ok(m)]
+    if not any(_module_ok(m) for m in _DB_DRIVER_MODULES):
+        missing.append("pymysql|psycopg")
+    return missing
 
 
 def _interpreter_with_deps() -> str | None:
@@ -187,13 +234,8 @@ def _interpreter_with_deps() -> str | None:
     优先用当前解释器；若缺包，则回退到项目内 .venv/venv 或本机 managed venv。
     都找不到返回 None（调用方给出安装提示后退出）。
     """
-    try:
-        import importlib
-        for m in _REQUIRED_DEPS:
-            importlib.import_module(m)
+    if not _missing_deps():
         return sys.executable
-    except Exception:
-        pass
     candidates = [
         ROOT / ".venv" / "Scripts" / "python.exe",
         ROOT / "venv" / "Scripts" / "python.exe",
@@ -206,7 +248,7 @@ def _interpreter_with_deps() -> str | None:
             continue
         try:
             subprocess.run(
-                [str(c), "-c", "import " + ", ".join(_REQUIRED_DEPS)],
+                [str(c), "-c", _dep_check_script()],
                 check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
             return str(c)
@@ -724,11 +766,13 @@ def _ensure_port_free(host: str, port: int, force: bool = False) -> None:
 
 
 def main() -> None:
-    # 依赖自检：当前解释器缺包则自动切换到带依赖的虚拟环境（修复系统 Python 缺 pymysql 导致启动即崩退出）
+    # 依赖自检：当前解释器缺包则自动切换到带依赖的虚拟环境（修复系统 Python 缺数据库驱动导致启动即崩退出）
     py = _interpreter_with_deps()
     if py is None:
-        _log("❌ 当前 Python 缺少依赖：" + ", ".join(_REQUIRED_DEPS))
+        missing = _missing_deps() or list(_REQUIRED_DEPS)
+        _log("❌ 当前 Python 缺少依赖：" + ", ".join(missing))
         _log("   请先安装：pip install -r requirements.txt，或激活已装好依赖的虚拟环境后再运行。")
+        _log("   数据库驱动按 ADMIN_DATABASE_URL 择一：MySQL 装 PyMySQL，PostgreSQL 装 psycopg。")
         sys.exit(2)
     if py != sys.executable:
         _log(f"[main] 当前解释器缺依赖，自动改用虚拟环境：{py}")

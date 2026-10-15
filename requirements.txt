@@ -3,7 +3,12 @@ uvicorn[standard]
 httpx
 # 管理后台（多账号反代 + API Key 网关）
 sqlalchemy>=2.0
+# 数据库驱动：按 ADMIN_DATABASE_URL 的方言**择一**安装即可 ——
+#   MySQL      → pymysql（默认，已启用）
+#   PostgreSQL → psycopg（取消下面一行注释：pip install "psycopg[binary]"）
+# 两个都装也不冲突，只是多占一点体积。
 pymysql
+# psycopg[binary]
 redis
 python-multipart
 PyJWT
