@@ -158,6 +158,8 @@ def init_db() -> bool:
         _ensure_column("accounts", "session_dead_fails", "INT", "DEFAULT 0")
         _ensure_column("accounts", "consecutive_fails", "INT", "DEFAULT 0")
         _ensure_column("accounts", "degrade_until", "DATETIME", "NULL")
+        # 迁移：账号级在途并发上限（NULL=全局；0=不限；N=N 路）
+        _ensure_column("accounts", "max_in_flight", "INT", "NULL")
         _ensure_column("accounts", "credits_expiring", "INT", "DEFAULT 0")
 
         # 迁移：积分到期口径字段（见 admin/credits.py）。

@@ -2,29 +2,29 @@
 title workbuddy2api - Start
 cd /d "%~dp0"
 setlocal
+set "SYSDIR=%SystemRoot%\System32"
 
 echo ========================================
 echo   workbuddy2api Start Service
 echo ========================================
 echo.
 
-REM 先停掉旧实例 / 旧守护
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\daemon.ps1" -Stop >nul 2>&1
+REM Stop old instance / watchdog first
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\daemon.ps1" -Stop >/dev/null 2>&1
 
-REM -Detach：用 Start-Process -WindowStyle Hidden 把守护进程完全脱离本窗口/会话。
-REM 不要用 start /B：那会把服务挂在当前控制台上，关窗口即被回收。
+REM -Detach: Start-Process hidden window, survives closing this window
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\daemon.ps1" -Detach
 
 echo Starting detached daemon + service, please wait...
-timeout /t 6 /nobreak >nul
+"%SYSDIR%\timeout.exe" /t 6 /nobreak >/dev/null
 
-netstat -ano | findstr ":8790" | findstr "LISTENING" >nul 2>&1
+"%SYSDIR%\netstat.exe" -ano | "%SYSDIR%\findstr.exe" ":8790" | "%SYSDIR%\findstr.exe" "LISTENING" >/dev/null 2>&1
 if %errorlevel%==0 (
     echo Service started OK!
 ) else (
     echo Still starting... checking again in 5s
-    timeout /t 5 /nobreak >nul
-    netstat -ano | findstr ":8790" | findstr "LISTENING" >nul 2>&1
+    "%SYSDIR%\timeout.exe" /t 5 /nobreak >/dev/null
+    "%SYSDIR%\netstat.exe" -ano | "%SYSDIR%\findstr.exe" ":8790" | "%SYSDIR%\findstr.exe" "LISTENING" >/dev/null 2>&1
     if %errorlevel%==0 (
         echo Service started OK!
     ) else (

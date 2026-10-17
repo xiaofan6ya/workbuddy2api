@@ -36,7 +36,10 @@ function Write-WatchLog([string]$msg) {
     try {
         $dir = Split-Path -Parent $WatchLog
         if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-        Add-Content -Path $WatchLog -Value $line -Encoding UTF8
+        # -ErrorAction Stop 是必须的：Add-Content 在文件被并发写入时抛的是
+        # **非终止**错误，`catch` 抓不住，照样往屏幕刷 "Add-Content : 参数无效"。
+        # 加上它才会变成终止错误、被下面的 catch 吞掉。
+        Add-Content -Path $WatchLog -Value $line -Encoding UTF8 -ErrorAction Stop
     } catch { }
 }
 
@@ -65,17 +68,73 @@ function Start-ServiceProcess {
 }
 
 function Stop-Watchdog {
-    if (Test-Path $PidFile) {
-        try {
-            $wpid = Get-Content $PidFile -ErrorAction Stop | Select-Object -First 1
-            $wpid = [int]($wpid.ToString().Trim())
-            if ($wpid -gt 0 -and $wpid -ne $PID) {
-                Stop-Process -Id $wpid -Force -ErrorAction SilentlyContinue
-                Write-WatchLog "已停止守护 PID=$wpid"
-            }
-        } catch { }
-        Remove-Item $PidFile -Force -ErrorAction SilentlyContinue
+    # 必须杀掉**所有**本脚本的守护进程，而不是只杀 pid 文件里那一个。
+    #
+    # 为什么：守护循环启动时会把 `$PID` **覆盖写**进 pid 文件；一旦因为
+    # 重复启动 / 没先 -Stop 就 -Detach 而叠出多个守护，后起的会顶掉前一个的
+    # 记录，前一个就成了「无主野守护」—— 于是 -Stop 杀一个，野守护 10s 内
+    # 又把服务拉回来，表现就是「关闭脚本关不掉」。
+    #
+    # 按命令行特征扫描（不是按单个 pid），并用 taskkill /T 连子树一起收。
+    Get-CimInstance Win32_Process -Filter "Name='powershell.exe' or Name='pwsh.exe'" -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.ProcessId -ne $PID -and
+            $_.CommandLine -and
+            $_.CommandLine -like "*daemon.ps1*" -and
+            $_.CommandLine -notlike "*-Stop*" -and
+            $_.CommandLine -notlike "*-Status*"
+        } |
+        ForEach-Object {
+            & "$env:SystemRoot\System32\taskkill.exe" /PID $_.ProcessId /T /F *> $null
+            Write-WatchLog "已停止守护 PID=$($_.ProcessId)"
+        }
+    Remove-Item $PidFile -Force -ErrorAction SilentlyContinue
+}
+
+function Stop-ServiceTree {
+    # 停服务必须收**整棵进程树**。
+    #
+    # 为什么不能只扫 `*main.py*`：本服务实际是
+    #   python main.py -> python main.py（execv 换解释器）
+    #     -> python -m uvicorn（守卫父进程）
+    #       -> python -m uvicorn（真正监听 8790 的那个）
+    # 只杀 main.py 会留下两层 uvicorn 孤儿，端口还被占着，看起来像「没关掉」。
+    #
+    # 先杀监听者（taskkill /T 连子树），再扫残留。
+    $svcPid = Get-ListenerPid
+    if ($svcPid -gt 0) {
+        & "$env:SystemRoot\System32\taskkill.exe" /PID $svcPid /T /F *> $null
+        Write-WatchLog "已停止服务(含子树) PID=$svcPid"
+    } else {
+        Write-WatchLog "端口 $Port 上没有正在监听的服务"
     }
+
+    Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.CommandLine -and (
+                $_.CommandLine -like "*main.py*" -or
+                $_.CommandLine -like "*uvicorn*admin.server*"
+            )
+        } |
+        ForEach-Object {
+            & "$env:SystemRoot\System32\taskkill.exe" /PID $_.ProcessId /T /F *> $null
+            Write-WatchLog "已停止残留服务 PID=$($_.ProcessId)"
+        }
+}
+
+function Test-OtherWatchdog {
+    # 是否已有别的守护在跑（排除自己）。守护模式入口用它做防叠加。
+    $others = Get-CimInstance Win32_Process -Filter "Name='powershell.exe' or Name='pwsh.exe'" -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.ProcessId -ne $PID -and
+            $_.CommandLine -and
+            $_.CommandLine -like "*daemon.ps1*" -and
+            $_.CommandLine -notlike "*-Stop*" -and
+            $_.CommandLine -notlike "*-Status*" -and
+            $_.CommandLine -notlike "*-Once*" -and
+            $_.CommandLine -notlike "*-Detach*"
+        }
+    return @($others)
 }
 
 # ---- -Detach：把自己以隐藏窗口重新拉起，当前进程即可退出 ----------------
@@ -94,21 +153,18 @@ if ($Detach) {
 
 # ---- -Stop --------------------------------------------------------------
 if ($Stop) {
+    # 顺序很重要：先停守护，否则守护会在下面停服务后 10s 内把服务拉起来。
     Stop-Watchdog
-    $svcPid = Get-ListenerPid
-    if ($svcPid -gt 0) {
-        Stop-Process -Id $svcPid -Force -ErrorAction SilentlyContinue
-        Write-WatchLog "已停止服务 PID=$svcPid"
+    Stop-ServiceTree
+    # 再扫一轮：taskkill /T 有时来不及带走刚 fork 的子进程。
+    Start-Sleep -Seconds 1
+    Stop-ServiceTree
+    $left = Get-ListenerPid
+    if ($left -gt 0) {
+        Write-WatchLog "⚠️ 端口 $Port 仍被 PID=$left 占用"
     } else {
-        Write-WatchLog "端口 $Port 上没有正在监听的服务"
+        Write-WatchLog "已确认端口 $Port 已释放"
     }
-    # 再扫一遍可能残留的 python main.py（无监听窗口期）
-    Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -and $_.CommandLine -like "*main.py*" } |
-        ForEach-Object {
-            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
-            Write-WatchLog "已停止残留服务 PID=$($_.ProcessId)"
-        }
     exit 0
 }
 
@@ -144,6 +200,15 @@ if ($Once) {
 }
 
 # ---- 守护模式 -----------------------------------------------------------
+# 防叠加：已有守护在跑就退出，绝不叠出第二个（叠加会让 -Stop 关不干净，
+# 表现就是「关闭脚本关不掉」—— 野守护会不停把服务拉回来）。
+$existing = Test-OtherWatchdog
+if (@($existing).Count -gt 0) {
+    $ids = (@($existing) | ForEach-Object { $_.ProcessId }) -join ','
+    Write-WatchLog "已有守护在跑（PID=$ids），本实例退出以免叠加"
+    exit 0
+}
+
 $PID | Out-File -FilePath $PidFile -Encoding ASCII -Force
 Write-WatchLog "守护启动（每 ${IntervalSec}s 探活一次，端口 $Port）"
 

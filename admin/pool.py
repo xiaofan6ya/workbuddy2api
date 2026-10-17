@@ -727,13 +727,30 @@ class PoolRuntime:
 
     max_in_flight: int = 0
 
-    def available(self, accounts: Iterable[Any]) -> list[Any]:
-        """Exclude full or maintenance-reserved identities, even without a cap."""
-        limit = getattr(self, "max_in_flight", 0) or 0
-        return [a for a in accounts if not self.inflight.full(getattr(a, "uid", "") or "", limit)]
+    def limit_for(self, account: Any = None) -> int:
+        """账号级在途上限：Account.max_in_flight 覆盖全局；0=不限。"""
+        if account is not None:
+            mc = getattr(account, "max_in_flight", None)
+            if mc is not None:
+                return max(0, int(mc))
+        return getattr(self, "max_in_flight", 0) or 0
 
-    def acquire(self, uid: str) -> bool:
-        return self.inflight.acquire(uid or "", getattr(self, "max_in_flight", 0) or 0)
+    def available(self, accounts: Iterable[Any]) -> list[Any]:
+        """过滤掉在途占满的账号（该账号上限 <=0 时不过滤）。"""
+        out = []
+        for a in accounts:
+            limit = self.limit_for(a)
+            if limit <= 0 or not self.inflight.full(getattr(a, "uid", "") or "", limit):
+                out.append(a)
+        return out
+
+    def acquire(self, uid: str, limit: int | None = None) -> bool:
+        if limit is None:
+            limit = getattr(self, "max_in_flight", 0) or 0
+        return self.inflight.acquire(uid or "", limit)
+
+    def acquire_account(self, account: Any) -> bool:
+        return self.acquire(getattr(account, "uid", "") or "", self.limit_for(account))
 
     def release(self, uid: str) -> None:
         self.inflight.release(uid or "")

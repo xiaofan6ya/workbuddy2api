@@ -14,7 +14,7 @@ from admin.db import SessionLocal, init_db, wait_database_ready
 from admin.models import SystemSetting
 from admin.routers import (accounts, credits, groups,
                            growth, keys, login as login_router, logs, models,
-                           proxy, schedules, stats, sync)
+                           netcfg, proxy, schedules, stats, sync)
 from admin.ratelimit import (clear_failures, get_client_ip, get_trusted_client_ip,
                              is_locked, record_failure)
 from admin.security import (
@@ -95,6 +95,62 @@ app.add_middleware(
 )
 
 
+_CONSOLE_PATH_PREFIXES = (
+    "/admin",
+    "/api",
+    "/join",
+    "/static",
+    "/docs",
+    "/redoc",
+    "/openapi.json",
+)
+
+_LOCAL_CONSOLE_IPS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
+def _console_ip_allowed(ip: str) -> bool:
+    if not ip:
+        return False
+    if ip in _LOCAL_CONSOLE_IPS:
+        return True
+    extra = {p.strip() for p in (settings.CONSOLE_ALLOWED_IPS or "").split(",") if p.strip()}
+    return ip in extra
+
+
+class ConsoleLocalOnlyMiddleware:
+    """控制台仅本机：防止同热点/局域网通过端口操作管理台。
+
+    /v1/* 业务 API 不受影响（仍用 API Key），供热点上的其它设备调用。
+    来源 IP 只信 TCP 对端，**不信任** X-Forwarded-For / X-Real-IP
+    —— 同网攻击者可以随便伪造这些头。
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http" or not settings.CONSOLE_LOCAL_ONLY:
+            return await self.app(scope, receive, send)
+        path = scope.get("path", "") or ""
+        if path != "/" and not path.startswith(_CONSOLE_PATH_PREFIXES):
+            return await self.app(scope, receive, send)
+        # Starlette 把 TCP 对端放在 scope["client"] = (host, port)
+        client = ""
+        pair = scope.get("client")
+        if pair and len(pair) >= 1:
+            client = pair[0] or ""
+        if _console_ip_allowed(client):
+            return await self.app(scope, receive, send)
+        from starlette.responses import JSONResponse
+        return await JSONResponse(
+            {"error": {
+                "message": "管理台仅允许本机访问。其它设备请使用 API Key 调用 /v1/*。",
+                "type": "console_local_only",
+            }},
+            status_code=403,
+        )(scope, receive, send)
+
+
 @app.middleware("http")
 async def _security_headers(request: Request, call_next):
     """统一安全响应头：防点击劫持 / MIME 嗅探 / 敏感头泄露。"""
@@ -108,6 +164,8 @@ async def _security_headers(request: Request, call_next):
 
 
 app.add_middleware(GatewayAdmissionMiddleware)
+# 控制台仅本机：必须在业务中间件之前就能拒掉远端
+app.add_middleware(ConsoleLocalOnlyMiddleware)
 
 if os.getenv("WORKBUDDY_ANDROID") == "1":
     from admin.request_metrics import TimingMiddleware
@@ -142,6 +200,7 @@ app.include_router(groups.router)
 app.include_router(stats.router)
 app.include_router(credits.router)
 app.include_router(growth.router)
+app.include_router(netcfg.router)
 app.include_router(growth_center.router)
 app.include_router(benefits.router)
 if os.getenv("WORKBUDDY_ANDROID") != "1":

@@ -480,6 +480,7 @@ def list_accounts(_: bool = Depends(require_admin), db: Session = Depends(get_db
             "enterprise_id": a.enterprise_id,
             "domain": a.domain,
             "status": a.status,
+            "max_in_flight": a.max_in_flight,
             "bound_key_id": owners[a.id].id if owners.get(a.id) else None,
             "bound_key_name": owners[a.id].name if owners.get(a.id) else "",
             "balance_total": a.balance_total,
@@ -1574,10 +1575,20 @@ def patch_account(
         acc.name = body["name"]
     if "status" in body and body["status"] in ("active", "disabled"):
         acc.status = body["status"]
-        if acc.status == 'disabled' and acc.cool_kind == 'session_dead':
-            acc.cool_kind = 'manual_disabled'
+        if acc.status == "disabled" and acc.cool_kind == "session_dead":
+            acc.cool_kind = "manual_disabled"
+    if "max_in_flight" in body:
+        v = body["max_in_flight"]
+        if v is None or v == "":
+            acc.max_in_flight = None
+        else:
+            try:
+                n = int(v)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="max_in_flight 必须是整数")
+            acc.max_in_flight = n if n >= 0 else None
     db.commit()
-    return {"id": acc.id, "ok": True}
+    return {"id": acc.id, "ok": True, "max_in_flight": acc.max_in_flight}
 
 
 @router.delete("/{acc_id}")

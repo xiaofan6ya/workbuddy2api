@@ -27,6 +27,8 @@ converter 已在 admin/server.py 中挂载到 /gw 前缀，因此无需再单独
 
 环境变量（可选，覆盖默认；部署务必设置）:
   ADMIN_PORT / ADMIN_HOST
+      ADMIN_HOST 会覆盖管理台里的「服务监听地址」开关（环境变量是运维逃生门，
+      优先级最高）。想用管理台开关控制监听地址，请把 ADMIN_HOST 留空或删除。
   ADMIN_JWT_SECRET  : 生产务必覆盖为 >=32 字节随机串（默认是弱密钥，会报警）
   ADMIN_USERNAME / ADMIN_PASSWORD     : 后台登录凭据（**必填**，无默认值；未配置则登录 503）
   CONVERTER_DESENSITIZE / CONVERTER_LOG : 内嵌网关的脱敏开关与日志路径
@@ -218,15 +220,31 @@ def _interpreter_with_deps() -> str | None:
 def _resolve_host_port(args) -> tuple[str, int]:
     """解析监听地址/端口。
 
-    **优先级：显式命令行 > 环境变量(.env) > 默认值。**
+    **host 优先级：显式命令行 --host > 环境变量 ADMIN_HOST > 后台设置(DB) > 默认 0.0.0.0。**
+    **port 优先级：显式命令行 --port > 环境变量 ADMIN_PORT > 默认 8790。**
 
-    原实现写成 `os.getenv("ADMIN_PORT", str(args.port))` —— 环境变量优先，
+    端口那段的原实现写成 `os.getenv("ADMIN_PORT", str(args.port))` —— 环境变量优先，
     于是 `.env` 里的 `ADMIN_PORT=8790` 会**吞掉** `--port 58634`，
     命令行上写的端口被静默忽略、仍然去起 8790：接管逻辑随即杀掉线上实例。
     实测中这造成过两次线上服务被误停（用 `--port` 起测试实例时）。
     命令行是操作者的**当次明确意图**，必须压过配置文件里的常驻值。
+
+    host 多出的「后台设置(DB)」这一级：管理台 UI 的「服务监听地址」开关把值存进
+    `system_settings.net_bind_host`（见 `admin/netcfg.py`）。监听地址只在进程启动时
+    确定，所以必须由这里读出来拼进 uvicorn 命令行。环境变量仍然是运维逃生门，优先于 DB。
     """
-    host = args.host if args.host is not None else os.getenv("ADMIN_HOST", "0.0.0.0")
+    if args.host is not None:
+        host = args.host  # 命令行是当次明确意图，最高优先（保持原语义）
+    elif (os.getenv("ADMIN_HOST") or "").strip():
+        host = os.getenv("ADMIN_HOST").strip()  # 环境变量次之（运维逃生门）
+    else:
+        # 未显式配置：读后台保存值。失败一律退回默认，绝不让启动失败。
+        try:
+            from admin import netcfg
+            host = netcfg.effective_host()
+        except Exception as e:
+            _log(f"[main] 读取后台监听地址失败，使用默认 0.0.0.0：{e}")
+            host = "0.0.0.0"
     if args.port is not None:
         port = int(args.port)
     else:
@@ -739,7 +757,8 @@ def main() -> None:
     # 若默认写成 0.0.0.0/8790，就分不清用户是否真的要这个值，也就无法让
     # 命令行压过 .env（见 `_resolve_host_port`）。
     ap.add_argument("--host", default=None,
-                    help="监听地址（默认取 ADMIN_HOST，再默认 0.0.0.0）")
+                    help="监听地址（默认取 ADMIN_HOST，再取管理台「服务监听地址」设置，再默认 0.0.0.0；"
+                         "显式指定后，管理台里的「服务监听地址」开关将不再生效）")
     ap.add_argument("--port", type=int, default=None,
                     help="服务端口（默认取 ADMIN_PORT，再默认 8790）")
     ap.add_argument("--restart", action="store_true",
@@ -824,7 +843,13 @@ def main() -> None:
         pass
 
     admin_host, admin_port = _resolve_host_port(args)
-    _log(f"[main] 单端口服务已启动：")
+    # 打印监听地址来源，排障时一眼可见「到底是谁决定的」（命令行/环境变量/后台设置/默认）
+    try:
+        from admin import netcfg as _nc
+        _host_src = _nc.current()["source"]
+    except Exception:
+        _host_src = "未知"
+    _log(f"[main] 单端口服务已启动（监听 {admin_host}:{admin_port}，来源：{_host_src}）：")
     _log(f"       管理后台   : http://{admin_host}:{admin_port}/admin")
     _log(f"       托管网关   : http://{admin_host}:{admin_port}/v1/chat/completions  (带 Key 配额)")
     _log(f"       内嵌网关   : http://{admin_host}:{admin_port}/gw/v1/...            (桌面登录态 / responses / messages)")

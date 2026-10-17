@@ -49,6 +49,9 @@ class Account(Base):
     # 带权威分类的错误各有自己的惩罚，不喂这个计数器，避免重复计罚。
     consecutive_fails = Column(Integer, default=0)
     degrade_until = Column(DateTime, nullable=True)
+    # 该账号在途并发上限：NULL=跟随全局 ADMIN_POOL_MAX_IN_FLIGHT；0=不限；N=最多 N 路
+    # 与 API Key 的 max_concurrent（准入层）独立：这里是「单号打流」保护。
+    max_in_flight = Column(Integer, nullable=True, default=None)
     #: 快过期积分（供三因子权重的「快过期先用」项）。
     credits_expiring = Column(Integer, default=0)
     # ---- 积分到期口径（详见 admin/credits.py）----------------------------

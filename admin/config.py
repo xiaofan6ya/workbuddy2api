@@ -66,6 +66,17 @@ class Settings:
     HOST = os.getenv("ADMIN_HOST", "0.0.0.0")
     PORT = int(os.getenv("ADMIN_PORT", "8790"))
 
+    #: 控制台（/admin、/api/*、/join、/static）是否仅允许本机访问。
+    #:
+    #: 默认开启。ADMIN_HOST=0.0.0.0 时同热点/局域网都能连到端口；
+    #: 若不锁控制台，任何连上热点的人都能打开管理台、导出账号登录态、改配置。
+    #: 业务口 /v1/*（API Key）不受此限制，仍可供热点上的设备调用。
+    #: 设 ADMIN_CONSOLE_LOCAL_ONLY=0 可恢复旧行为（不推荐）。
+    CONSOLE_LOCAL_ONLY = os.getenv("ADMIN_CONSOLE_LOCAL_ONLY", "1") == "1"
+    #: 额外放行的管理台来源 IP（逗号分隔）。默认仅 127.0.0.1 / ::1。
+    #: 反代部署时填反代回环地址；一般用户保持空即可。
+    CONSOLE_ALLOWED_IPS = os.getenv("ADMIN_CONSOLE_ALLOWED_IPS", "").strip()
+
     #: 是否对公网开放 OpenAPI 文档（`/docs`、`/redoc`、`/openapi.json`）
     #: 以及内嵌网关的 `/gw/docs`、`/gw/openapi.json`。
     #:
@@ -135,7 +146,14 @@ class Settings:
     #: 单账号最大在途请求数（0 = 不限）。
     #: 粘性路由与加权选号都会倾向少数账号，叠加长连接后单号容易过载，
     #: 上游按账号限速时会成片 429/5xx；在途上限把并发摊平到整个池子。
-    MAX_IN_FLIGHT = int(os.getenv("ADMIN_POOL_MAX_IN_FLIGHT", "3"))
+    #:
+    #: 2026-10-14 从 3 调到 8：单账号池下 5 路并发会被 3 卡死，
+    #: 第 4+ 路选号为空直接 503「号池里没有可用账号」。8 路可覆盖常见
+    #: 多开场景；仍不够就继续调大，或加号池账号。
+    MAX_IN_FLIGHT = int(os.getenv("ADMIN_POOL_MAX_IN_FLIGHT", "8"))
+    #: 选号时若候选账号全部「在途占满」，最多等待多少秒再失败。
+    #: 0 = 不等待（旧行为）。短暂等待可消化并发尖峰，避免误报 no_account。
+    POOL_BUSY_WAIT_SECONDS = float(os.getenv("ADMIN_POOL_BUSY_WAIT_SECONDS", "3"))
     #: 会话粘性路由开关。开启后同一会话固定同一账号：
     #: 上游前缀缓存不碎、多轮更快更省，且一次会话不在号池里逐轮跳号（拟人）。
     STICKY_ENABLED = os.getenv("ADMIN_SESSION_STICKY", "1") != "0"

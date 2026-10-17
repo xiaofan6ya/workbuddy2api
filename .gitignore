@@ -84,6 +84,20 @@ desktop/assets/*.ico
 desktop/assets/*.png
 
 !scripts/build_desktop.py
+!tests/
+tests/*
+!tests/test_desktop.py
+!tests/test_android.py
+!tests/test_mobile_latency.py
+!tests/test_android_http.py
+!tests/test_credentials.py
+!tests/test_account_automation.py
+!tests/test_key_account_binding.py
+!tests/test_anthropic_tool_pairing.py
+!tests/test_desensitize_user_payload.py
+!tests/test_key_concurrent_limit.py
+!tests/test_console_local_only.py
+!tests/test_netcfg.py
 !scripts/build_android.py
 !scripts/check_runtime.py
 !scripts/export_credential_key.py
@@ -103,6 +117,9 @@ workbuddy_admin.db-wal
 
 # Local credentials file
 登录密码.txt
+
+# 本机防火墙排查探针（临时诊断用，不入库）
+chk_fw.ps1
 
 # Sanitized public implementation notes
 !docs/

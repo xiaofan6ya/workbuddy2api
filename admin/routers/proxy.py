@@ -1713,6 +1713,12 @@ def _no_account_reason(db: Session, account_id=None, key_id=None) -> str:
         return (f"全部 {len(funded)} 个账号正被上游临时限流"
                 f"（最近一个约 {left} 秒后恢复，无需人工处理）")
     blocked = len(funded) - len(transient)
+    # 在途占满：健康但并发被占完 —— 最常见的并发误报
+    busy = [a for a in funded
+            if POOL.inflight.full(getattr(a, "uid", "") or "", POOL.limit_for(a))]
+    if busy and len(busy) == len(funded):
+        return (f"{len(funded)} 个账号均健康，但在途并发已满"
+                f"（可在账号上单独调「在途并发」，或调 ADMIN_POOL_MAX_IN_FLIGHT）")
     return (f"{len(funded)} 个账号有余额，但当前都不可选"
             f"（其中 {blocked} 个处于熔断/降权或需人工处理的异常状态）")
 
@@ -1857,8 +1863,18 @@ def _select_account(db: Session, exclude_ids: set | None = None,
         if not rows:
             return None
 
-    # 在途占满的号不参与选号（把并发摊平到整个池子，避免单号过载→成片 429）
-    rows = POOL.available(rows)
+    # 在途占满的号不参与选号（把并发摊平到整个池子，避免单号过载→成片 429）。
+    # 若只是「忙」而非「无号」，短暂等待释放 —— 否则并发尖峰会误报 503 no_account。
+    candidates = list(rows)
+    rows = POOL.available(candidates)
+    wait_s = float(getattr(settings, "POOL_BUSY_WAIT_SECONDS", 0) or 0)
+    if not rows and candidates and wait_s > 0:
+        deadline = time.monotonic() + wait_s
+        while not rows and time.monotonic() < deadline:
+            time.sleep(min(0.2, max(0.05, wait_s / 10)))
+            rows = POOL.available(candidates)
+        if not rows:
+            _logger.warning("号池在途占满（%d 个候选均忙），等待 %.1fs 后仍无空闲", len(candidates), wait_s)
     if not rows:
         return None
 
@@ -2463,7 +2479,7 @@ async def chat_completions(
                         tried_accounts += 1
                         # 在途租约：占满上限的号选号阶段已被过滤，
                         # 这里再 acquire 一次以闭合并发窗口（选号与占用之间有间隙）。
-                        if not POOL.acquire(acc_i.uid or ""):
+                        if not POOL.acquire_account(acc_i):
                             continue
                         held_uid = acc_i.uid or ""
                         retry_budget.consume()
@@ -2937,7 +2953,7 @@ async def responses_proxy(
                     if not acc_i:
                         break
                     tried_ids.add(acc_i.id)
-                    if not POOL.acquire(acc_i.uid or ""):
+                    if not POOL.acquire_account(acc_i):
                         continue
                     held_uid = acc_i.uid or ""
                     retry_budget.consume()
@@ -3110,7 +3126,7 @@ async def responses_proxy(
                         if not acc_i:
                             break
                         tried_ids.add(acc_i.id)
-                        if not POOL.acquire(acc_i.uid or ""):
+                        if not POOL.acquire_account(acc_i):
                             continue
                         held_uid = acc_i.uid or ""
                         retry_budget.consume()
@@ -3406,7 +3422,7 @@ async def anthropic_messages(
                     if not acc_i:
                         break
                     tried_ids.add(acc_i.id)
-                    if not POOL.acquire(acc_i.uid or ""):
+                    if not POOL.acquire_account(acc_i):
                         continue
                     held_uid = acc_i.uid or ""
                     retry_budget.consume()
@@ -3580,7 +3596,7 @@ async def anthropic_messages(
                         if not acc_i:
                             break
                         tried_ids.add(acc_i.id)
-                        if not POOL.acquire(acc_i.uid or ""):
+                        if not POOL.acquire_account(acc_i):
                             continue
                         held_uid = acc_i.uid or ""
                         retry_budget.consume()

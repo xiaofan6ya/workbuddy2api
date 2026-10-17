@@ -1345,6 +1345,38 @@
         <button onclick="changePassword()" class="px-3 py-1.5 rounded-lg btn-primary text-sm">保存新密码</button>
       </div>
 
+      <!-- 网络监听：仅本机 / 局域网 -->
+      <div id="netBindBlock" class="card p-5 mt-4 max-w-md">
+        <h3 class="text-sm font-medium mb-1"><i class="fa-solid fa-network-wired mr-1"></i>服务监听地址</h3>
+        <p class="text-xs text-slate-500 mb-3">
+          控制服务对外的监听范围。<b>管理台 /admin 始终只允许本机访问</b>，不受此项影响。
+        </p>
+
+        <label class="flex items-start gap-2 mb-2 cursor-pointer">
+          <input type="radio" name="netBind" id="netBindLocal" value="127.0.0.1" class="mt-1" />
+          <span class="text-sm">仅本机 <span class="text-slate-400">(127.0.0.1)</span>
+            <div class="text-xs text-slate-400">局域网完全连不上，最安全</div>
+          </span>
+        </label>
+        <label class="flex items-start gap-2 mb-3 cursor-pointer">
+          <input type="radio" name="netBind" id="netBindLan" value="0.0.0.0" class="mt-1" />
+          <span class="text-sm">局域网 <span class="text-slate-400">(0.0.0.0)</span>
+            <div class="text-xs text-slate-400">同热点/局域网可用 /v1 业务 API（需 API Key）；管理台仍仅本机</div>
+          </span>
+        </label>
+
+        <div id="netBindStatus" class="text-xs text-slate-500 mb-3"></div>
+        <div id="netBindWarn" class="text-xs text-amber-600 mb-3 hidden"></div>
+
+        <button id="netBindSaveBtn" onclick="saveNetConfig()"
+                class="px-3 py-1.5 rounded-lg btn-primary text-sm">保存</button>
+
+        <p class="text-xs text-slate-400 mt-2">
+          ⚠️ 保存后需<b>重启服务</b>才生效（开关不会立刻改变监听）。
+          若防火墙弹出授权框请选择「允许」，否则局域网仍无法访问。
+        </p>
+      </div>
+
       <!-- 逆向产物（开发/测试环境工具） -->
       <div id="appSourceBlock" class="card p-5 mt-4">
         <div class="flex flex-wrap justify-between items-center gap-2 mb-1">
@@ -1785,8 +1817,8 @@ function activateTab(name, opts) {
   if (name === "credits") loadCreditStats();
   if (name === "logs") openLogsPanel();
   if (name === "client") loadClientProfile();
-  if (name === "settings") loadAppSource();
-  if (name === "models") loadModels();
+  if (name === "settings") { loadAppSource(); loadNetConfig(); }
+  if (name === "models") { loadModels(); loadModelBusy(); }
   if (name === "growth") window.WBGrowthCenter?.enter();
   scheduleModelBusy();
 }
@@ -2249,7 +2281,10 @@ function accRow(a) {
           ${a.resource_initialization && a.resource_initialization.status !== 'completed' ? `<small style="color:var(--fg-muted)" title="${esc((a.resource_initialization.errors || []).join('；'))}">${esc(({queued:'余额与模型初始化排队中',running:'正在初始化余额与模型',failed:'初始化未完成，可刷新余额或同步模型',invalid_credential:'账号凭证不完整，请重新导入或授权登录'})[a.resource_initialization.status] || '')}</small>` : ''}
       </div>
     </td>
-    <td class="col-status" data-label="状态">${badge(a.status)}${accountLimitBadge(a)}</td>
+    <td class="col-status" data-label="状态">${badge(a.status)}${accountLimitBadge(a)}
+      <button type="button" class="limit-chip" style="margin-left:4px" onclick="editAccInflight(${a.id})"
+        data-tooltip="该账号在途并发上限" data-tooltip-description="空=全局 ADMIN_POOL_MAX_IN_FLIGHT；0=不限；N=最多 N 路在途。与 API Key 并发限制相互独立。"
+        aria-label="在途并发">${a.max_in_flight===0?'并发不限':(a.max_in_flight==null?'并发全局':('并发 '+a.max_in_flight))}</button></td>
     <td class="tnum text-right" data-label="总积分" style="color:var(--fg-muted)">${a.balance_total}</td>
     <td class="tnum text-right font-medium" data-label="剩余" style="color:${a.balance_remain>0?'var(--ok,#059669)':'var(--danger)'}">
       ${a.balance_remain}${soon > 0 ? `<span class="fs-10-5" style="color:var(--warn)"> (${fmtCredit(soon)})</span>` : ""}
@@ -2373,6 +2408,17 @@ async function refreshAcc(id){
   if (r.ok) { loadAccounts(); if (_creditStats) loadCreditStats(); }
 }
 async function toggleAcc(id,st){ await api("/api/accounts/"+id,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({status:st})}); loadAccounts(); }
+async function editAccInflight(id){
+  const a = accById(id);
+  const cur = a && a.max_in_flight != null ? String(a.max_in_flight) : "";
+  const v = prompt("该账号在途并发上限\n（空=跟随全局，0=不限，N=最多 N 路）", cur);
+  if (v === null) return;
+  const body = { max_in_flight: v.trim() === "" ? null : Number(v.trim()) };
+  if (v.trim() !== "" && !Number.isInteger(body.max_in_flight)) { toast("必须是整数", "err"); return; }
+  const r = await api("/api/accounts/"+id, {method:"PATCH", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+  toast(r.ok ? "已更新在途并发" : "更新失败", r.ok ? "ok" : "err");
+  if (r.ok) loadAccounts();
+}
 async function delAcc(id){ if(!await uiConfirm({message:"确认删除该账号？", title:"删除账号"}))return; const r=await api("/api/accounts/"+id,{method:"DELETE"}); toast(r.ok?"已删除":"删除失败",r.ok?"ok":"err"); if(r.ok) loadAccounts(); }
 async function injectAcc(id){
   if(!await uiConfirm({kind:"warn", danger:false, title:"注入本机客户端",
@@ -5046,6 +5092,50 @@ async function changePassword(){
   const r=await api("/api/admin/password",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({old_password:oldP,new_password:np})});
   if(r.ok){ toast("密码已修改，下次登录生效"); $("#oldPwd").value=$("#newPwd").value=$("#newPwd2").value=""; }
   else { const d=await r.json().catch(()=>({})); toast("修改失败: "+(d.detail||""),"err"); }
+}
+
+/* ==================== 服务监听地址（仅本机 / 局域网） ==================== */
+async function loadNetConfig(){
+  const r = await api("/api/net/config");
+  if(!r.ok){ const el=$("#netBindBlock"); if(el) el.classList.add("hidden"); return; } // 旧版本无此端点 -> 隐藏
+  const d = await r.json();
+  const local = $("#netBindLocal"), lan = $("#netBindLan");
+  if(local) local.checked = (d.host === "127.0.0.1");
+  if(lan)   lan.checked   = (d.host === "0.0.0.0");
+
+  // env 锁定（.env 里配了 ADMIN_HOST）-> 置灰只读，并说明来源
+  const locked = !d.editable;
+  [local, lan].forEach(el => { if(el){ el.disabled = locked; }});
+  const btn = $("#netBindSaveBtn");
+  if(btn){ btn.disabled = locked; btn.classList.toggle("opacity-50", locked); }
+
+  const cur = d.host === "127.0.0.1" ? "仅本机 (127.0.0.1)" : "局域网 (0.0.0.0)";
+  $("#netBindStatus").innerHTML = locked
+    ? `当前由环境变量 <code>${esc(d.env_var)}</code> 决定：<b>${esc(cur)}</b>`
+      + ` —— 如需在管理台修改，请从 .env 中移除 <code>${esc(d.env_var)}</code> 后重启。`
+    : `当前配置：<b>${esc(cur)}</b> <span class="text-slate-400">（来源：${esc(d.source)}）</span>`;
+
+  // 「已保存 ≠ 当前生效」：诚实表达需重启，不谎称当前实际监听
+  const pending = d.editable && d.saved && d.source === "后台设置";
+  const warn = $("#netBindWarn");
+  if(warn){
+    warn.classList.toggle("hidden", !pending);
+    if(pending) warn.innerHTML =
+      `<i class="fa-solid fa-circle-info mr-1"></i>后台已保存 <b>${esc(cur)}</b>；若服务仍按旧地址监听，请重启服务。`;
+  }
+}
+
+async function saveNetConfig(){
+  const pick = document.querySelector('input[name="netBind"]:checked');
+  if(!pick){ toast("请选择一种监听方式","err"); return; }
+  const r = await api("/api/net/config", {
+    method: "PUT", headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ host: pick.value }),
+  });
+  const d = await r.json().catch(()=>({}));
+  if(!r.ok){ toast("保存失败：" + esc(d.detail || ("HTTP " + r.status)), "err"); return; }
+  toast("已保存，<b>重启服务后生效</b>","ok");
+  loadNetConfig();
 }
 
 /* ==================== 定时任务 ==================== */
